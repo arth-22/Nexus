@@ -3,7 +3,6 @@ use crate::kernel::event::{Event, InputEvent, VisualSignal, InputContent};
 use tracing::{info, debug, warn};
 use std::time::Duration;
 use img_hash::{HasherConfig, HashAlg}; // Depending on crate api
-use image::imageops::FilterType;
 
 pub struct VisionPipeline {
     tx: mpsc::Sender<Event>,

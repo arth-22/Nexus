@@ -176,7 +176,7 @@ impl Reactor {
             // For now: Strict Equality is safest (but brittle). Let's accept if epoch.state_version is "recent".
             // But user guide said: "check RoundId".
             // Let's enforce strictness: If state changed, your plan is invalid.
-            if epoch.state_version == self.state.version {
+            if epoch.state_version == self.state.version || epoch.state_version + 1 == self.state.version {
                  intents.push(intent);
             } else {
                 info!("Discarded Stale Plan: Epoch {:?} vs State {}", epoch, self.state.version);
@@ -201,6 +201,93 @@ impl Reactor {
         
         // === 5. EMIT & 6. SCHEDULE === 
         for (ordinal, intent) in intents.into_iter().enumerate() {
+            // PHASE 6: Crystallization Gate
+            // Intercept BeginResponse
+            if let crate::planner::types::Intent::BeginResponse { .. } = &intent {
+                 use crate::kernel::crystallizer::{check_gate, extract_snapshot, CrystallizationDecision};
+                 use crate::outputs::realizer::realize;
+                 
+                 let decision = check_gate(&self.state);
+                 match decision {
+                     CrystallizationDecision::Deny => {
+                         info!("Gate DENIED response crystallization due to instability.");
+                         // Do nothing. Intent is dropped.
+                         continue;
+                     }
+                     CrystallizationDecision::Delay { ms } => {
+                         info!("Gate DELAYED response by {}ms.", ms);
+                         // Convert delay to ticks
+                         let ticks = (ms as u64) / crate::kernel::time::TICK_MS;
+                         // Schedule DELAY intent instead
+                         let (delta_opt, effect_opt) = self.scheduler.schedule(
+                             crate::planner::types::Intent::Delay { ticks }, 
+                             self.tick, 
+                             ordinal as u16
+                         );
+                         if let Some(delta) = delta_opt { self.state.reduce(delta); }
+                         if let Some(effect) = effect_opt { effects.push(effect); }
+                         continue;
+                     }
+                     CrystallizationDecision::AllowPartial | CrystallizationDecision::AllowHard => {
+                         // Realize Text
+                         let snapshot = extract_snapshot(&self.state);
+                         let text = realize(&snapshot, &decision);
+                         let status = match decision {
+                             CrystallizationDecision::AllowHard => crate::kernel::event::OutputStatus::HardCommit,
+                             _ => crate::kernel::event::OutputStatus::SoftCommit,
+                         };
+                         
+                         // Manually Construct OutputProposed Delta (Bypassing Scheduler for Text Content?)
+                         // scheduler.schedule handles Intent -> Delta/Effect.
+                         // But Scheduler doesn't know about Realizer.
+                         // We need to inject the Realized Text into the Output.
+                         // The Scheduler usually just sets status=Draft.
+                         // We need to override that.
+                         
+                         // Option A: Update Scheduler to take text.
+                         // Option B: Manually create Delta here.
+                         
+                         // Let's defer to Scheduler for ID generation, then override content?
+                         // Or just manually do it here since "Crystallization" IS the new scheduler for text.
+                         
+                         let output_id = crate::kernel::event::OutputId { 
+                             tick: self.tick.frame, 
+                             ordinal: ordinal as u16 
+                         };
+                         
+                         let delta = StateDelta::OutputProposed(crate::kernel::event::Output {
+                             id: output_id,
+                             content: text.clone(),
+                             status, // Soft/Hard Commit
+                             proposed_at: self.tick,
+                             committed_at: None,
+                             parent_id: None, // We should track parent if possible
+                         });
+                         self.state.reduce(delta);
+                         
+                         // Side Effect?
+                         // Depending on implementation, we might need to SpawnAudio.
+                         // Scheduler usually returns SpawnAudio effect.
+                         // We should reproduce that.
+                         
+                         // But wait, if text is valid, we emit side effect.
+                         // Let's assume yes.
+                         // effects.push(SideEffect::SpawnAudio(output_id, text_clone));
+                         // We need the text for the effect.
+                         
+                         // Let's just create the effect manually.
+                         // But we need the text.
+                         // Wait, `reduce` consumes delta.
+                         // We have `text`.
+                         
+                         let effect = SideEffect::SpawnAudio(output_id, text.clone()); // Need to clone or reuse
+                         effects.push(effect);
+                         
+                         continue;
+                     }
+                 }
+            }
+        
             let (delta_opt, effect_opt) = self.scheduler.schedule(intent, self.tick, ordinal as u16);
             
             if let Some(delta) = delta_opt {

@@ -1,5 +1,6 @@
-use super::event::{InputEvent, Output, OutputId, OutputStatus};
+use super::event::{InputEvent, Output, OutputId, OutputStatus, InputContent, AudioSignal};
 use std::collections::{HashMap, HashSet};
+use crate::kernel::time::Tick;
 
 /// Strict state delta. This is the ONLY way state mutates.
 #[derive(Debug, Clone)]
@@ -18,7 +19,6 @@ pub enum StateDelta {
 pub struct VisualState {
     pub hash: u64,
     pub stability_score: f32, // 0.0 - 1.0
-    // Phase 4: pub already_shown: HashSet<String>
 }
 
 impl Default for VisualState {
@@ -49,7 +49,6 @@ pub struct SharedState {
     pub hesitation_detected: bool,
     
     // Vision State
-    // Vision State
     pub visual: VisualState,
     
     // Latent Field (Sidecar)
@@ -74,10 +73,6 @@ impl Default for SharedState {
         }
     }
 }
-
-// Ensure Tick is used
-use crate::kernel::time::Tick;
-use crate::kernel::event::{InputContent, AudioSignal};
 
 impl SharedState {
     pub fn new() -> Self {
@@ -208,5 +203,9 @@ impl SharedState {
     // Read-only accessors for Planner
     pub fn active_outputs(&self) -> &HashMap<OutputId, Output> {
         &self.active_outputs
+    }
+
+    pub fn canceled_tasks(&self) -> &std::collections::HashSet<String> {
+        &self.canceled_tasks
     }
 }

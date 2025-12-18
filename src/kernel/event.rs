@@ -66,6 +66,8 @@ pub struct Output {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum OutputStatus {
     Draft,
-    Committed,
+    SoftCommit, // Retractable
+    HardCommit, // Durable
     Canceled,
+    Committed, // Legacy/Finalized
 }
