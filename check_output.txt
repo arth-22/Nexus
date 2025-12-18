@@ -1,0 +1,50 @@
+    Checking nexus v0.1.0 (/Users/Sid/Desktop/sid/Nexus)
+error[E0432]: unresolved import `super::event::StateDelta`
+ --> src/kernel/reactor.rs:5:39
+  |
+5 | use super::event::{Event, InputEvent, StateDelta};
+  |                                       ^^^^^^^^^^ no `StateDelta` in `kernel::event`
+  |
+  = help: consider importing this enum instead:
+          crate::kernel::state::StateDelta
+
+error[E0432]: unresolved import `super::event::StateDelta`
+ --> src/kernel/scheduler.rs:1:60
+  |
+1 | use super::event::{Intent, Output, OutputId, OutputStatus, StateDelta};
+  |                                                            ^^^^^^^^^^ no `StateDelta` in `kernel::event`
+  |
+  = help: consider importing this enum instead:
+          crate::kernel::state::StateDelta
+
+warning: unused import: `super::time::Tick`
+ --> src/kernel/event.rs:1:5
+  |
+1 | use super::time::Tick;
+  |     ^^^^^^^^^^^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `Instant`
+ --> src/kernel/reactor.rs:2:39
+  |
+2 | use tokio::time::{interval, Duration, Instant}; // Only for the loop driver
+  |                                       ^^^^^^^
+
+warning: unused import: `debug`
+ --> src/kernel/reactor.rs:3:21
+  |
+3 | use tracing::{info, debug};
+  |                     ^^^^^
+
+warning: unused variable: `tx`
+  --> src/main.rs:15:10
+   |
+15 |     let (tx, rx) = mpsc::channel(100);
+   |          ^^ help: if this is intentional, prefix it with an underscore: `_tx`
+   |
+   = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+For more information about this error, try `rustc --explain E0432`.
+warning: `nexus` (bin "nexus") generated 4 warnings
+error: could not compile `nexus` (bin "nexus") due to 2 previous errors; 4 warnings emitted
