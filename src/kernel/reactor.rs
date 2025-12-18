@@ -21,6 +21,8 @@ pub struct Reactor {
     pub cancel_registry: CancellationRegistry,
     pub tick: Tick,
     pub planner: AsyncPlanner,
+    // Track the last state version we requested a plan for, to prevent loops
+    last_planned_version: Option<u64>,
 }
 
 impl Reactor {
@@ -33,6 +35,7 @@ impl Reactor {
             cancel_registry: CancellationRegistry::new(),
             tick: Tick::new(),
             planner: AsyncPlanner::new(tx),
+            last_planned_version: None,
         }
     }
 
@@ -65,6 +68,8 @@ impl Reactor {
              // CRITICAL: Input invalidates current planning context. 
              // Stop the thinker.
              self.planner.abort();
+             // We reset planned version because we interrupted the thought process
+             // although the state version mismatch will handle it naturally.
         }
 
         for inp in inputs {
@@ -93,9 +98,18 @@ impl Reactor {
 
         // B) Check Opportunity -> Speculate
         // If state is quiescent, ask LLM.
+        // GUARD: Only plan if we haven't already planned for this state version
         if self.state.active_outputs().is_empty() {
-             let snapshot = self.state.snapshot(self.tick);
-             self.planner.dispatch(snapshot);
+             let needs_plan = match self.last_planned_version {
+                 Some(v) => v != self.state.version,
+                 None => true,
+             };
+
+             if needs_plan {
+                 let snapshot = self.state.snapshot(self.tick);
+                 self.planner.dispatch(snapshot);
+                 self.last_planned_version = Some(self.state.version);
+             }
         }
         
         // === 5. EMIT & 6. SCHEDULE === 

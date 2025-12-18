@@ -5,7 +5,7 @@ use crate::kernel::event::Event;
 use crate::planner::types::{StateSnapshot, Intent, PlanningEpoch};
 
 const LLM_URL: &str = "http://localhost:8080/completion";
-const TIMEOUT_MS: u64 = 200; // Strict kernel timeout
+const DEFAULT_TIMEOUT_MS: u64 = 200;
 
 pub struct AsyncPlanner {
     client: reqwest::Client,
@@ -15,9 +15,14 @@ pub struct AsyncPlanner {
 
 impl AsyncPlanner {
     pub fn new(tx: mpsc::Sender<Event>) -> Self {
+        let timeout_ms = std::env::var("NEXUS_PLANNER_TIMEOUT_MS")
+            .ok()
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(DEFAULT_TIMEOUT_MS);
+
         Self {
             client: reqwest::Client::builder()
-                .timeout(std::time::Duration::from_millis(TIMEOUT_MS))
+                .timeout(std::time::Duration::from_millis(timeout_ms))
                 .build()
                 .unwrap_or_else(|_| reqwest::Client::new()),
             tx,
@@ -60,6 +65,9 @@ impl AsyncPlanner {
             match client.post(LLM_URL).json(&body).send().await {
                 Ok(resp) => {
                     if let Ok(text) = resp.text().await {
+                        // Debug Log Raw Response for Config Verification
+                        tracing::debug!("Raw LLM Response (Epoch {:?}): {}", epoch, text);
+
                         let intent: Option<Intent> = serde_json::from_str(&text).ok();
                          let parsed = intent.unwrap_or(Intent::DoNothing);
                          let _ = tx.send(Event::PlanProposed(epoch, parsed)).await;

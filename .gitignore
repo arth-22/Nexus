@@ -1,0 +1,3 @@
+/target
+**/*.gguf
+**/*.DS_Store
