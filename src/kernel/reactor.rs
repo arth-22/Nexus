@@ -8,32 +8,50 @@ use super::time::{Tick, TICK_MS};
 use super::scheduler::{Scheduler, SideEffect};
 
 use super::cancel::CancellationRegistry;
-use crate::planner::stub::plan;
+// use crate::planner::stub::plan;
+
+use crate::planner::async_planner::AsyncPlanner;
 
 pub struct Reactor {
     pub receiver: mpsc::Receiver<Event>,
+    // We need a sender clone for the planner
+    tx_clone: mpsc::Sender<Event>,
     pub state: SharedState,
     pub scheduler: Scheduler,
     pub cancel_registry: CancellationRegistry,
     pub tick: Tick,
+    pub planner: AsyncPlanner,
 }
 
 impl Reactor {
-    pub fn new(receiver: mpsc::Receiver<Event>) -> Self {
+    pub fn new(receiver: mpsc::Receiver<Event>, tx: mpsc::Sender<Event>) -> Self {
         Self {
             receiver,
+            tx_clone: tx.clone(),
             state: SharedState::new(),
             scheduler: Scheduler,
             cancel_registry: CancellationRegistry::new(),
             tick: Tick::new(),
+            planner: AsyncPlanner::new(tx),
         }
     }
 
     /// Pure Tick Step: Advances State. Returns SideEffects to be executed by the driver.
     /// MUST NOT await I/O or timers.
-    pub fn tick_step(&mut self, inputs: Vec<InputEvent>) -> Vec<SideEffect> {
+    pub fn tick_step(&mut self, events: Vec<Event>) -> Vec<SideEffect> {
         self.tick = self.tick.next();
         let mut effects = Vec::new();
+
+        // Separate inputs and plans
+        let mut inputs = Vec::new();
+        let mut plans = Vec::new();
+
+        for event in events {
+            match event {
+                Event::Input(inp) => inputs.push(inp),
+                Event::PlanProposed(epoch, intent) => plans.push((epoch, intent)),
+            }
+        }
 
         // === 2. CANCEL (Pure Decision) ===
         let cancel_deltas = self.cancel_registry.process(&inputs);
@@ -46,10 +64,34 @@ impl Reactor {
             self.state.reduce(StateDelta::InputReceived(inp));
         }
 
-        // === 4. PLAN (Pure Futures) ===
-        let intents = plan(&self.state, self.tick);
+        // === 4. PLAN (Async Integration) ===
+        // A) Apply VALID Proposed Plans
+        let mut intents = Vec::new();
+        for (epoch, intent) in plans {
+            // STALE REJECTION: Only accept if epoch matches current state version
+            // Note: In real system, we might allow slightly older versions if casual.
+            // For Strict Phase 1: Epoch.state_version must match self.state.version
+            // Actually, state.version might have incremented due to inputs in *this* tick.
+            // So we allow epoch.version <= self.version? 
+            // Better: We check if the State hasn't diverged significantly.
+            // For now: Strict Equality is safest (but brittle). Let's accept if epoch.state_version is "recent".
+            // But user guide said: "check RoundId".
+            // Let's enforce strictness: If state changed, your plan is invalid.
+            if epoch.state_version == self.state.version {
+                 intents.push(intent);
+            } else {
+                info!("Discarded Stale Plan: Epoch {:?} vs State {}", epoch, self.state.version);
+            }
+        }
+
+        // B) Check Opportunity -> Speculate
+        // If state is quiescent, ask LLM.
+        if self.state.active_outputs().is_empty() {
+             let snapshot = self.state.snapshot(self.tick);
+             self.planner.dispatch(snapshot);
+        }
         
-        // === 5. EMIT (Speculation) & 6. SCHEDULE ===
+        // === 5. EMIT & 6. SCHEDULE === 
         for (ordinal, intent) in intents.into_iter().enumerate() {
             let (delta_opt, effect_opt) = self.scheduler.schedule(intent, self.tick, ordinal as u16);
             
@@ -76,16 +118,14 @@ impl Reactor {
             // Driver: Wait for physical time boundary
             cadence.tick().await;
 
-            // Driver: Drain Inputs
-            let mut inputs: Vec<InputEvent> = Vec::new();
+            // Driver: Drain Events (Inputs + Plans)
+            let mut events: Vec<Event> = Vec::new();
             while let Ok(event) = self.receiver.try_recv() {
-                if let Event::Input(inp) = event {
-                    inputs.push(inp);
-                }
+                events.push(event);
             }
 
             // Core: Execute Step
-            let effects = self.tick_step(inputs);
+            let effects = self.tick_step(events);
 
             // Driver: Execute Side Effects
             for effect in effects {

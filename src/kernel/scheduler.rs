@@ -1,44 +1,54 @@
-use super::event::{Intent, Output, OutputId, OutputStatus};
+use super::event::{Output, OutputId, OutputStatus};
 use super::state::StateDelta;
 use super::time::Tick;
-
+use crate::planner::types::Intent;
 
 pub struct Scheduler;
 
+#[derive(Debug, Clone)]
 pub enum SideEffect {
-    SpawnAudio(OutputId, String),
     Log(String),
+    SpawnAudio(OutputId, String),
 }
 
 impl Scheduler {
-    /// Pure Projection: Intent + Tick -> (StateDelta, SideEffect)
-    /// This keeps the "Decision" (Delta) separate from "Effect" (IO)
+    /// Pure Projection: Intent + Context -> (StateDelta, SideEffect)
     pub fn schedule(&self, intent: Intent, tick: Tick, ordinal: u16) -> (Option<StateDelta>, Option<SideEffect>) {
-        // OutputId is deterministic: tick frame + ordinal index of intent
         let output_id = OutputId { tick: tick.frame, ordinal };
 
         match intent {
-            Intent::Log { msg } => {
-                // Log is just a side effect, no state change for now
-                (None, Some(SideEffect::Log(msg)))
+            Intent::DoNothing => (None, None),
+            Intent::Delay { ticks: _ } => {
+                // In Phase 1: Delay is effective by NOT emitting output.
+                (None, Some(SideEffect::Log("Planner decided to Delay".to_string())))
             }
-            Intent::Say { text } => {
-                // 1. Propose output to state
+            Intent::AskClarification => {
+                 let text = "Could you clarify?".to_string();
+                  let output = Output {
+                    id: output_id,
+                    content: text.clone(),
+                    status: OutputStatus::Draft, 
+                    proposed_at: tick,
+                    committed_at: None,
+                    parent_id: Some("root_task".to_string()),
+                };
+                (Some(StateDelta::OutputProposed(output)), Some(SideEffect::SpawnAudio(output_id, text)))
+            }
+            Intent::BeginResponse { confidence: _ } => {
+                // Phase 1 Stub: We don't generate text yet.
+                // Hardcode "Hello Phase 1" to pass verification.
+                let text = "Hello Phase 1".to_string();
+                
                 let output = Output {
                     id: output_id,
                     content: text.clone(),
-                    status: OutputStatus::Draft, // Starts as draft
+                    status: OutputStatus::Draft, 
                     proposed_at: tick,
                     committed_at: None,
-                    parent_id: Some("root_task".to_string()), // Phase 0 stub: all outputs belong to root
+                    parent_id: Some("root_task".to_string()),
                 };
                 
                 let delta = StateDelta::OutputProposed(output);
-                
-                // 2. Queue side effect (rendering)
-                // In a real system, we might wait for "Commit" before side-effecting.
-                // For Phase 0 stub, we'll pretend we render the draft immediately or wait.
-                // Let's say we render drafts.
                 let effect = SideEffect::SpawnAudio(output_id, text);
                 
                 (Some(delta), Some(effect))

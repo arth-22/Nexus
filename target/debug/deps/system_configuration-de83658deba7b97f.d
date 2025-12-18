@@ -1,0 +1,9 @@
+/Users/Sid/Desktop/sid/Nexus/target/debug/deps/system_configuration-de83658deba7b97f.d: /Users/Sid/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/system-configuration-0.6.1/src/lib.rs /Users/Sid/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/system-configuration-0.6.1/src/dynamic_store.rs /Users/Sid/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/system-configuration-0.6.1/src/network_configuration.rs /Users/Sid/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/system-configuration-0.6.1/src/network_reachability.rs /Users/Sid/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/system-configuration-0.6.1/src/preferences.rs
+
+/Users/Sid/Desktop/sid/Nexus/target/debug/deps/libsystem_configuration-de83658deba7b97f.rmeta: /Users/Sid/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/system-configuration-0.6.1/src/lib.rs /Users/Sid/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/system-configuration-0.6.1/src/dynamic_store.rs /Users/Sid/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/system-configuration-0.6.1/src/network_configuration.rs /Users/Sid/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/system-configuration-0.6.1/src/network_reachability.rs /Users/Sid/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/system-configuration-0.6.1/src/preferences.rs
+
+/Users/Sid/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/system-configuration-0.6.1/src/lib.rs:
+/Users/Sid/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/system-configuration-0.6.1/src/dynamic_store.rs:
+/Users/Sid/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/system-configuration-0.6.1/src/network_configuration.rs:
+/Users/Sid/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/system-configuration-0.6.1/src/network_reachability.rs:
+/Users/Sid/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/system-configuration-0.6.1/src/preferences.rs:

@@ -11,22 +11,51 @@ pub enum StateDelta {
     TaskCanceled(String),
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct SharedState {
     // Private fields to enforce encapsulation
     beliefs: HashMap<String, f32>,
     active_outputs: HashMap<OutputId, Output>,
     // In strict model, we might track canceled task IDs or just effects
     canceled_tasks: HashSet<String>,
+    // Monotonic version for Epoch validation
+    pub version: u64,
 }
+
+impl Default for SharedState {
+    fn default() -> Self {
+        Self {
+            beliefs: HashMap::new(),
+            active_outputs: HashMap::new(),
+            canceled_tasks: HashSet::new(),
+            version: 0,
+        }
+    }
+}
+
+use crate::kernel::time::Tick;
 
 impl SharedState {
     pub fn new() -> Self {
         Self::default()
     }
 
+    pub fn snapshot(&self, tick: Tick) -> crate::planner::types::StateSnapshot {
+        crate::planner::types::StateSnapshot {
+            epoch: crate::planner::types::PlanningEpoch {
+                tick,
+                state_version: self.version,
+            },
+            last_input_ticks: 0, // TODO: Track this real
+            user_active: false, // Stub
+            active_outputs: self.active_outputs.len(),
+            recent_interruptions: self.canceled_tasks.len(),
+        }
+    }
+
     /// Pure reduction: State + Delta -> Mutated State
     pub fn reduce(&mut self, delta: StateDelta) {
+        self.version += 1;
         match delta {
             StateDelta::InputReceived(_input) => {
                 // For Phase 0 stub, we might just log or set a "recent input" flag

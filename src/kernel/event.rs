@@ -11,6 +11,7 @@ pub struct OutputId {
 pub enum Event {
     /// External signals (Audio, Text, System Signals)
     Input(InputEvent),
+    PlanProposed(crate::planner::types::PlanningEpoch, crate::planner::types::Intent),
 }
 
 #[derive(Debug, Clone)]
@@ -18,15 +19,6 @@ pub struct InputEvent {
     pub source: String,
     // For Phase 0, we keep content simple. In real system, this is a struct.
     pub content: String, 
-}
-
-/// Intents are produced by the Planner (Pure)
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Intent {
-    Log { msg: String },
-    /// Request to emit an output
-    Say { text: String },
-    // Delay, Interrupt, etc. will go here
 }
 
 /// Outputs have a lifecycle managed by the Kernel

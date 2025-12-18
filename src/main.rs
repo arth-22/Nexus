@@ -8,10 +8,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tracing::info!("Nexus Kernel Booting...");
 
     // Create event channel
-    let (_tx, rx) = mpsc::channel(100);
+    let (tx, rx) = mpsc::channel(100);
 
     // Initialize Reactor
-    let mut reactor = Reactor::new(rx);
+    let mut reactor = Reactor::new(rx, tx);
 
     // Spawn Reactor
     let reactor_handle = tokio::spawn(async move {
