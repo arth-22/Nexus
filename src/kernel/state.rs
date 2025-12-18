@@ -1,6 +1,7 @@
 use super::event::{InputEvent, Output, OutputId, OutputStatus, InputContent, AudioSignal};
 use std::collections::{HashMap, HashSet};
 use crate::kernel::time::Tick;
+use crate::intent::{LongHorizonIntent, IntentId};
 
 #[derive(Debug, Clone)]
 pub struct MetaLatents {
@@ -36,9 +37,8 @@ pub enum StateDelta {
     TaskCanceled(String),
     VisualStateUpdate { hash: u64, stability: f32 },
     LatentUpdate { slot: crate::kernel::latent::LatentSlot },
-    MetaLatentUpdate { delta: MetaLatents }, // Partial update or replacement? Let's say partial via fields if we want, but struct is small. Replacement is easier? Or add fields?
-    // Plan implies we update fields. Let's make it a replacement for simplicity or additive delta?
-    // Monitor calculates decay. So Monitor sends the NEW state.
+    MetaLatentUpdate { delta: MetaLatents }, 
+    IntentUpdate { intent: LongHorizonIntent },
     Tick(Tick),
 }
 
@@ -83,6 +83,9 @@ pub struct SharedState {
     
     // Meta-Latents (Self-Observation)
     pub meta_latents: MetaLatents,
+    
+    // Long-Horizon Intents (Part IX)
+    pub active_intents: HashMap<IntentId, LongHorizonIntent>,
 }
 
 impl Default for SharedState {
@@ -101,6 +104,7 @@ impl Default for SharedState {
             visual: VisualState::default(), 
             latents: crate::kernel::latent::LatentState::default(),
             meta_latents: MetaLatents::default(),
+            active_intents: HashMap::new(),
         }
     }
 }
@@ -110,7 +114,7 @@ impl SharedState {
         Self::default()
     }
 
-    pub fn snapshot(&self, tick: Tick) -> crate::planner::types::StateSnapshot {
+    pub fn snapshot(&self, tick: Tick, intent_context: crate::intent::IntentContext) -> crate::planner::types::StateSnapshot {
         crate::planner::types::StateSnapshot {
             epoch: crate::planner::types::PlanningEpoch {
                 tick,
@@ -145,6 +149,7 @@ impl SharedState {
                 if m.correction_bias > 0.3 { moods.push("Reflective"); }
                 if moods.is_empty() { "Confident".to_string() } else { moods.join(", ") }
             },
+            intent_context,
         }
     }
 
@@ -239,6 +244,9 @@ impl SharedState {
             StateDelta::MetaLatentUpdate { delta } => {
                 // Replacement update (Monitor calculates new values)
                 self.meta_latents = delta;
+            }
+            StateDelta::IntentUpdate { intent } => {
+                self.active_intents.insert(intent.id, intent);
             }
         }
     }

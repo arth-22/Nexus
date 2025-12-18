@@ -19,6 +19,7 @@ use crate::memory::{
     EpisodicStore, SemanticStore // Traits
 };
 use crate::monitor::monitor::SelfObservationMonitor; // Monitor
+use crate::intent::LongHorizonIntentManager; // Part IX: LHIM
 
 pub struct Reactor {
     pub receiver: mpsc::Receiver<Event>,
@@ -40,6 +41,9 @@ pub struct Reactor {
     
     // Self-Observation Monitor
     pub monitor: SelfObservationMonitor,
+    
+    // Part IX: Long-Horizon Intent Manager
+    pub lhim: LongHorizonIntentManager,
 }
 
 impl Reactor {
@@ -68,6 +72,7 @@ impl Reactor {
             semantic,
             
             monitor: SelfObservationMonitor::new(),
+            lhim: LongHorizonIntentManager::new(),
         }
     }
 
@@ -129,10 +134,26 @@ impl Reactor {
 
         // === 2. CANCEL (Pure Decision) ===
         let cancel_deltas = self.cancel_registry.process(&inputs);
+        let has_cancellation = !cancel_deltas.is_empty();
 
         // === 3. REDUCE (Causality) ===
         for delta in cancel_deltas {
             self.state.reduce(delta);
+        }
+        
+        // === PART IX: LONG-HORIZON INTENT (INTERRUPTION SUPREMACY) ===
+        // If cancellation occurring (or significant interruption logic), suspend intents.
+        if has_cancellation {
+            // Also if planner interrupted? The cancel_registry handles that.
+            let intent_deltas = self.lhim.handle_interruption(&self.state);
+            for d in intent_deltas {
+                self.state.reduce(d);
+            }
+        }
+        // Also apply LHIM Tick (Decay)
+        let lhim_deltas = self.lhim.tick(self.tick, &self.state);
+        for d in lhim_deltas {
+            self.state.reduce(d);
         }
         
         if !inputs.is_empty() {
@@ -211,7 +232,8 @@ impl Reactor {
              };
 
              if needs_plan {
-                 let snapshot = self.state.snapshot(self.tick);
+                 let context = self.lhim.get_context(&self.state);
+                 let snapshot = self.state.snapshot(self.tick, context);
                  // Future: Inject Memory Retrieval into Snapshot here?
                  // Or does planner query it via tool?
                  // Plan says: "Planner Query -> Memory Retriever".
