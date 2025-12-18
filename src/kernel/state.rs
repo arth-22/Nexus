@@ -2,6 +2,30 @@ use super::event::{InputEvent, Output, OutputId, OutputStatus, InputContent, Aud
 use std::collections::{HashMap, HashSet};
 use crate::kernel::time::Tick;
 
+#[derive(Debug, Clone)]
+pub struct MetaLatents {
+    /// 0.0 - 1.0: How sensitive the system is to being interrupted.
+    /// Higher = System prefers shorter outputs or delays.
+    pub interruption_sensitivity: f32,
+    
+    /// 0.0 - 1.0: Penalty on confidence due to recent failures.
+    /// Higher = System requires higher internal confidence to gate output.
+    pub confidence_penalty: f32,
+    
+    /// 0.0 - 1.0: Bias towards issuing correction intents.
+    pub correction_bias: f32,
+}
+
+impl Default for MetaLatents {
+    fn default() -> Self {
+        Self {
+            interruption_sensitivity: 0.0,
+            confidence_penalty: 0.0,
+            correction_bias: 0.0,
+        }
+    }
+}
+
 /// Strict state delta. This is the ONLY way state mutates.
 #[derive(Debug, Clone)]
 pub enum StateDelta {
@@ -12,6 +36,9 @@ pub enum StateDelta {
     TaskCanceled(String),
     VisualStateUpdate { hash: u64, stability: f32 },
     LatentUpdate { slot: crate::kernel::latent::LatentSlot },
+    MetaLatentUpdate { delta: MetaLatents }, // Partial update or replacement? Let's say partial via fields if we want, but struct is small. Replacement is easier? Or add fields?
+    // Plan implies we update fields. Let's make it a replacement for simplicity or additive delta?
+    // Monitor calculates decay. So Monitor sends the NEW state.
     Tick(Tick),
 }
 
@@ -53,6 +80,9 @@ pub struct SharedState {
     
     // Latent Field (Sidecar)
     pub latents: crate::kernel::latent::LatentState,
+    
+    // Meta-Latents (Self-Observation)
+    pub meta_latents: MetaLatents,
 }
 
 impl Default for SharedState {
@@ -70,6 +100,7 @@ impl Default for SharedState {
             hesitation_detected: false,
             visual: VisualState::default(), 
             latents: crate::kernel::latent::LatentState::default(),
+            meta_latents: MetaLatents::default(),
         }
     }
 }
@@ -106,6 +137,14 @@ impl SharedState {
                 }
                 if summary.is_empty() { "Quiescent".to_string() } else { summary }
             },
+            meta_mood: {
+                let m = &self.meta_latents;
+                let mut moods = Vec::new();
+                if m.confidence_penalty > 0.3 { moods.push("Cautious"); }
+                if m.interruption_sensitivity > 0.5 { moods.push("Sensitive"); }
+                if m.correction_bias > 0.3 { moods.push("Reflective"); }
+                if moods.is_empty() { "Confident".to_string() } else { moods.join(", ") }
+            },
         }
     }
 
@@ -137,7 +176,7 @@ impl SharedState {
                 // Decay constant lambda ~ 0.1 for fast decay (Audio), 0.01 for slow (Vision)
                 // confidence_new = confidence * exp(-rate) ~ confidence * (1.0 - rate)
                 self.latents.slots.retain_mut(|slot| {
-                    slot.confidence *= (1.0 - slot.decay_rate);
+                    slot.confidence *= 1.0 - slot.decay_rate;
                     slot.confidence > 0.05 // Prune dead slots
                 });
             }
@@ -196,6 +235,10 @@ impl SharedState {
             }
             StateDelta::LatentUpdate { slot } => {
                 self.latents.slots.push(slot);
+            }
+            StateDelta::MetaLatentUpdate { delta } => {
+                // Replacement update (Monitor calculates new values)
+                self.meta_latents = delta;
             }
         }
     }

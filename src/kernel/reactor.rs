@@ -1,6 +1,7 @@
 use tokio::sync::mpsc;
 use tokio::time::{interval, Duration}; // Only for the loop driver
-use tracing::info;
+use tracing::{info, warn};
+use std::path::PathBuf;
 
 use super::event::{Event, InputEvent};
 use super::state::{SharedState, StateDelta};
@@ -11,6 +12,13 @@ use super::cancel::CancellationRegistry;
 // use crate::planner::stub::plan;
 
 use crate::planner::async_planner::AsyncPlanner;
+
+// Memory System
+use crate::memory::{
+    MemoryObserver, MemoryConsolidator, InMemoryEpisodicStore, FileSemanticStore,
+    EpisodicStore, SemanticStore // Traits
+};
+use crate::monitor::monitor::SelfObservationMonitor; // Monitor
 
 pub struct Reactor {
     pub receiver: mpsc::Receiver<Event>,
@@ -23,10 +31,27 @@ pub struct Reactor {
     pub planner: AsyncPlanner,
     // Track the last state version we requested a plan for, to prevent loops
     last_planned_version: Option<u64>,
+
+    // Memory Components (Sidecars)
+    pub observer: MemoryObserver,
+    pub consolidator: MemoryConsolidator,
+    pub episodic: InMemoryEpisodicStore,
+    pub semantic: FileSemanticStore,
+    
+    // Self-Observation Monitor
+    pub monitor: SelfObservationMonitor,
 }
 
 impl Reactor {
     pub fn new(receiver: mpsc::Receiver<Event>, tx: mpsc::Sender<Event>) -> Self {
+        // Initialize Semantic Store
+        // For now, store in the current directory or a known location.
+        let semantic_path = PathBuf::from("nexus_semantic_memory.json");
+        let mut semantic = FileSemanticStore::new(semantic_path);
+        if let Err(e) = semantic.load() {
+            warn!("Failed to load semantic memory: {:?}", e);
+        }
+
         Self {
             receiver,
             tx_clone: tx.clone(),
@@ -36,6 +61,13 @@ impl Reactor {
             tick: Tick::new(),
             planner: AsyncPlanner::new(tx),
             last_planned_version: None,
+            
+            observer: MemoryObserver::new(),
+            consolidator: MemoryConsolidator::new(),
+            episodic: InMemoryEpisodicStore::new(),
+            semantic,
+            
+            monitor: SelfObservationMonitor::new(),
         }
     }
 
@@ -58,27 +90,7 @@ impl Reactor {
                 Event::Input(inp) => {
                      // 1. Vision: Check for PerceptUpdate -> Derive VisualState Delta
                      if let super::event::InputContent::Visual(super::event::VisualSignal::PerceptUpdate { hash, .. }) = inp.content {
-                         // Stability is computed later in reduce() Physics?
-                         // Wait, physics in reduce() uses TICK to decay.
-                         // But we need to SET the score based on update.
-                         // The plan said: "Stability Dynamics: If distance < threshold..."
-                         // But InputReceived only sets user_speaking...
-                         // We need a specific delta: VisualStateUpdate { hash, stability ? }
-                         // But reduce() calculates the *new* stability.
-                         // The Delta should probably just carry the FACT.
-                         // OR the reduce() logic for VisualStateUpdate receives the FACT and updates the score.
-                         // Let's look at state.rs again.
-                         // reduce(VisualStateUpdate { hash, stability }) sets it directly.
-                         // So Reactor must CALCULATE stability delta.
-                         
-                         // BUT Reactor shouldn't know physics constants...
-                         // Let's change state.rs to: VisualStateUpdate { hash, distance }
-                         // Then reduce() applies the +0.1/-0.3 logic.
-                         // Ah, I already implemented reduce() to set stability directly:
-                         // "self.visual.stability_score = stability;"
-                         
-                         // Okay, so Reactor computes it.
-                         // Let's fetch current stability.
+                         // Stability logic
                          let current_stability = self.state.visual.stability_score;
                          let distance_val = match &inp.content {
                              super::event::InputContent::Visual(super::event::VisualSignal::PerceptUpdate { distance, .. }) => *distance,
@@ -105,6 +117,14 @@ impl Reactor {
                 },
                 Event::PlanProposed(epoch, intent) => plans.push((epoch, intent)),
             }
+        }
+        
+        // === MONITOR OBSERVATION (RAW INPUTS) ===
+        // Feed raw inputs to Monitor
+        let mut monitor_obs = Vec::new();
+        for inp in &inputs {
+            let user_obs = self.monitor.observe_raw(inp, &self.state);
+            monitor_obs.extend(user_obs);
         }
 
         // === 2. CANCEL (Pure Decision) ===
@@ -160,22 +180,20 @@ impl Reactor {
                      });
                  }
                  _ => {}
-            }
+             }
+        }
+
+        // === MEMORY OBSERVATION (LATENTS) ===
+        // Observe current latent state for candidates
+        for slot in &self.state.latents.slots {
+            self.observer.observe_latent(slot, self.tick.frame);
         }
 
         // === 4. PLAN (Async Integration) ===
         // A) Apply VALID Proposed Plans
         let mut intents = Vec::new();
         for (epoch, intent) in plans {
-            // STALE REJECTION: Only accept if epoch matches current state version
-            // Note: In real system, we might allow slightly older versions if casual.
-            // For Strict Phase 1: Epoch.state_version must match self.state.version
-            // Actually, state.version might have incremented due to inputs in *this* tick.
-            // So we allow epoch.version <= self.version? 
-            // Better: We check if the State hasn't diverged significantly.
-            // For now: Strict Equality is safest (but brittle). Let's accept if epoch.state_version is "recent".
-            // But user guide said: "check RoundId".
-            // Let's enforce strictness: If state changed, your plan is invalid.
+            // STALE REJECTION
             if epoch.state_version == self.state.version || epoch.state_version + 1 == self.state.version {
                  intents.push(intent);
             } else {
@@ -194,6 +212,10 @@ impl Reactor {
 
              if needs_plan {
                  let snapshot = self.state.snapshot(self.tick);
+                 // Future: Inject Memory Retrieval into Snapshot here?
+                 // Or does planner query it via tool?
+                 // Plan says: "Planner Query -> Memory Retriever".
+                 // So we don't inject passively yet.
                  self.planner.dispatch(snapshot);
                  self.last_planned_version = Some(self.state.version);
              }
@@ -211,14 +233,11 @@ impl Reactor {
                  match decision {
                      CrystallizationDecision::Deny => {
                          info!("Gate DENIED response crystallization due to instability.");
-                         // Do nothing. Intent is dropped.
                          continue;
                      }
                      CrystallizationDecision::Delay { ms } => {
                          info!("Gate DELAYED response by {}ms.", ms);
-                         // Convert delay to ticks
                          let ticks = (ms as u64) / crate::kernel::time::TICK_MS;
-                         // Schedule DELAY intent instead
                          let (delta_opt, effect_opt) = self.scheduler.schedule(
                              crate::planner::types::Intent::Delay { ticks }, 
                              self.tick, 
@@ -237,51 +256,29 @@ impl Reactor {
                              _ => crate::kernel::event::OutputStatus::SoftCommit,
                          };
                          
-                         // Manually Construct OutputProposed Delta (Bypassing Scheduler for Text Content?)
-                         // scheduler.schedule handles Intent -> Delta/Effect.
-                         // But Scheduler doesn't know about Realizer.
-                         // We need to inject the Realized Text into the Output.
-                         // The Scheduler usually just sets status=Draft.
-                         // We need to override that.
-                         
-                         // Option A: Update Scheduler to take text.
-                         // Option B: Manually create Delta here.
-                         
-                         // Let's defer to Scheduler for ID generation, then override content?
-                         // Or just manually do it here since "Crystallization" IS the new scheduler for text.
-                         
+                         // Create Output
                          let output_id = crate::kernel::event::OutputId { 
                              tick: self.tick.frame, 
                              ordinal: ordinal as u16 
                          };
                          
-                         let delta = StateDelta::OutputProposed(crate::kernel::event::Output {
+                         let output_obj = crate::kernel::event::Output {
                              id: output_id,
                              content: text.clone(),
-                             status, // Soft/Hard Commit
+                             status, 
                              proposed_at: self.tick,
                              committed_at: None,
-                             parent_id: None, // We should track parent if possible
-                         });
+                             parent_id: None,
+                         };
+
+                         let delta = StateDelta::OutputProposed(output_obj.clone());
                          self.state.reduce(delta);
                          
-                         // Side Effect?
-                         // Depending on implementation, we might need to SpawnAudio.
-                         // Scheduler usually returns SpawnAudio effect.
-                         // We should reproduce that.
-                         
-                         // But wait, if text is valid, we emit side effect.
-                         // Let's assume yes.
-                         // effects.push(SideEffect::SpawnAudio(output_id, text_clone));
-                         // We need the text for the effect.
-                         
-                         // Let's just create the effect manually.
-                         // But we need the text.
-                         // Wait, `reduce` consumes delta.
-                         // We have `text`.
-                         
-                         let effect = SideEffect::SpawnAudio(output_id, text.clone()); // Need to clone or reuse
+                         let effect = SideEffect::SpawnAudio(output_id, text.clone()); 
                          effects.push(effect);
+
+                         // === MEMORY OBSERVATION (OUTPUT) ===
+                         self.observer.observe_crystallization(&output_obj, &snapshot, self.tick.frame);
                          
                          continue;
                      }
@@ -289,14 +286,28 @@ impl Reactor {
             }
         
             let (delta_opt, effect_opt) = self.scheduler.schedule(intent, self.tick, ordinal as u16);
-            
-            if let Some(delta) = delta_opt {
-                self.state.reduce(delta);
-            }
-            
-            if let Some(effect) = effect_opt {
-                effects.push(effect);
-            }
+            if let Some(delta) = delta_opt { self.state.reduce(delta); }
+            if let Some(effect) = effect_opt { effects.push(effect); }
+        }
+
+        // === MEMORY CONSOLIDATION ===
+        // Drive Memory Lifecycle
+        self.episodic.tick(self.tick.frame); // Decay
+        
+        let candidates = self.observer.flush();
+        if !candidates.is_empty() {
+             self.consolidator.process(
+                 candidates, 
+                 &mut self.episodic, 
+                 &mut self.semantic, 
+                 self.tick.frame
+             );
+        }
+        
+        // === SELF OBSERVATION MONITOR TICK ===
+        // We feed aggregated observations collected earlier (monitor_obs) to the monitor
+        if let Some(delta) = self.monitor.tick(self.tick.frame, &monitor_obs) {
+             self.state.reduce(delta);
         }
 
         effects

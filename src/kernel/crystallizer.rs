@@ -44,12 +44,16 @@ pub fn check_gate(state: &SharedState) -> CrystallizationDecision {
     // 2. Soft Latents (Uncertainty)
     let uncertainty = state.latents.global_uncertainty();
     
-    // Thresholds
-    const DENY_THRESHOLD: f32 = 0.8;
+    // Thresholds (Biased by Meta-Latents)
+    // Penalty reduces tolerance for uncertainty.
+    let base_deny = 0.8;
+    let penalty = state.meta_latents.confidence_penalty;
+    let effective_deny_threshold = base_deny - (penalty * 0.3); // max shift 0.3 (0.8 -> 0.5)
+    
     const PARTIAL_THRESHOLD: f32 = 0.4;
     
-    if uncertainty > DENY_THRESHOLD {
-        return CrystallizationDecision::Deny; // Too confused
+    if uncertainty > effective_deny_threshold {
+        return CrystallizationDecision::Deny; // Too confused (or penalized)
     }
     
     // If somewhat uncertain, delay? 

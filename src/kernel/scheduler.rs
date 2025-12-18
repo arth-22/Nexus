@@ -22,9 +22,21 @@ impl Scheduler {
                 // In Phase 1: Delay is effective by NOT emitting output.
                 (None, Some(SideEffect::Log("Planner decided to Delay".to_string())))
             }
-            Intent::AskClarification => {
-                 let text = "Could you clarify?".to_string();
+            Intent::AskClarification { context } => {
+                 let text = format!("Could you clarify? Context: {}", context);
                   let output = Output {
+                    id: output_id,
+                    content: text.clone(),
+                    status: OutputStatus::Draft, 
+                    proposed_at: tick,
+                    committed_at: None,
+                    parent_id: Some("root_task".to_string()),
+                };
+                (Some(StateDelta::OutputProposed(output)), Some(SideEffect::SpawnAudio(output_id, text)))
+            }
+            Intent::ReviseStatement { ref_id: _, correction } => {
+                let text = format!("Correction: {}", correction);
+                let output = Output {
                     id: output_id,
                     content: text.clone(),
                     status: OutputStatus::Draft, 
