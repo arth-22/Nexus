@@ -22,6 +22,11 @@ impl CancellationRegistry {
             let should_cancel = match &input.content {
                 InputContent::Text(t) => t.trim().eq_ignore_ascii_case("STOP"),
                 InputContent::Audio(AudioSignal::SpeechStart) => true,
+                InputContent::Visual(crate::kernel::event::VisualSignal::PerceptUpdate { distance, .. }) => {
+                    // Threshold logic. If distance > threshold (e.g. 5 bits), cancel.
+                    // This is "Hard Interruption" by context shift.
+                    *distance >= 5
+                }
                 _ => false,
             };
 

@@ -18,7 +18,15 @@ pub enum Event {
 pub enum AudioSignal {
     SpeechStart,
     SpeechEnd,
-    // Future: HighEnergySpike
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VisualSignal {
+    /// Fact: A new percept has arrived.
+    PerceptUpdate {
+        hash: u64,
+        distance: u32,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -31,6 +39,7 @@ pub struct InputEvent {
 pub enum InputContent {
     Text(String),
     Audio(AudioSignal),
+    Visual(VisualSignal),
 }
 
 // Helper for legacy text compatibility

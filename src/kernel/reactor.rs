@@ -55,7 +55,54 @@ impl Reactor {
 
         for event in events {
             match event {
-                Event::Input(inp) => inputs.push(inp),
+                Event::Input(inp) => {
+                     // 1. Vision: Check for PerceptUpdate -> Derive VisualState Delta
+                     if let super::event::InputContent::Visual(super::event::VisualSignal::PerceptUpdate { hash, .. }) = inp.content {
+                         // Stability is computed later in reduce() Physics?
+                         // Wait, physics in reduce() uses TICK to decay.
+                         // But we need to SET the score based on update.
+                         // The plan said: "Stability Dynamics: If distance < threshold..."
+                         // But InputReceived only sets user_speaking...
+                         // We need a specific delta: VisualStateUpdate { hash, stability ? }
+                         // But reduce() calculates the *new* stability.
+                         // The Delta should probably just carry the FACT.
+                         // OR the reduce() logic for VisualStateUpdate receives the FACT and updates the score.
+                         // Let's look at state.rs again.
+                         // reduce(VisualStateUpdate { hash, stability }) sets it directly.
+                         // So Reactor must CALCULATE stability delta.
+                         
+                         // BUT Reactor shouldn't know physics constants...
+                         // Let's change state.rs to: VisualStateUpdate { hash, distance }
+                         // Then reduce() applies the +0.1/-0.3 logic.
+                         // Ah, I already implemented reduce() to set stability directly:
+                         // "self.visual.stability_score = stability;"
+                         
+                         // Okay, so Reactor computes it.
+                         // Let's fetch current stability.
+                         let current_stability = self.state.visual.stability_score;
+                         let distance_val = match &inp.content {
+                             super::event::InputContent::Visual(super::event::VisualSignal::PerceptUpdate { distance, .. }) => *distance,
+                             _ => 0,
+                         };
+                         
+                         let new_stability = if distance_val < 5 {
+                             (current_stability + 0.1).min(1.0)
+                         } else {
+                             (current_stability - 0.3).max(0.0)
+                         };
+                         
+                         // Emit derivation immediately
+                         self.state.reduce(StateDelta::VisualStateUpdate {
+                             hash,
+                             stability: new_stability,
+                         });
+                         
+                         // Add to inputs for CancelRegistry processing (which checks for Hard Interruptions)
+                         inputs.push(inp); 
+                     } else {
+                         inputs.push(inp);
+                     }
+                },
                 Event::PlanProposed(epoch, intent) => plans.push((epoch, intent)),
             }
         }

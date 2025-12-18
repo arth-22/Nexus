@@ -9,7 +9,24 @@ pub enum StateDelta {
     OutputCommitted(OutputId),
     OutputCanceled(OutputId),
     TaskCanceled(String),
+    VisualStateUpdate { hash: u64, stability: f32 },
     Tick(Tick),
+}
+
+#[derive(Debug, Clone)]
+pub struct VisualState {
+    pub hash: u64,
+    pub stability_score: f32, // 0.0 - 1.0
+    // Phase 4: pub already_shown: HashSet<String>
+}
+
+impl Default for VisualState {
+    fn default() -> Self {
+        Self {
+            hash: 0,
+            stability_score: 0.0,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -29,6 +46,9 @@ pub struct SharedState {
     pub last_speech_start: Option<Tick>,
     pub last_speech_end: Option<Tick>,
     pub hesitation_detected: bool,
+    
+    // Vision State
+    pub visual: VisualState,
 }
 
 impl Default for SharedState {
@@ -44,6 +64,7 @@ impl Default for SharedState {
             last_speech_start: None,
             last_speech_end: None,
             hesitation_detected: false,
+            visual: VisualState::default(), 
         }
     }
 }
@@ -89,6 +110,10 @@ impl SharedState {
                          self.turn_pressure = (self.turn_pressure + 0.1).min(1.0);
                     }
                 }
+                
+                // Visual Stability Decay (Physics)
+                // If no update received this tick, decay slightly
+                self.visual.stability_score = (self.visual.stability_score - 0.01).max(0.0);
             }
             StateDelta::InputReceived(input) => {
                 match input.content {
@@ -138,6 +163,10 @@ impl SharedState {
                         }
                     }
                 }
+            }
+            StateDelta::VisualStateUpdate { hash, stability } => {
+                self.visual.hash = hash;
+                self.visual.stability_score = stability;
             }
         }
     }
