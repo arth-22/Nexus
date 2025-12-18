@@ -47,12 +47,14 @@ impl VisionPipeline {
                 // Workaround for u64 extraction if crate doesn't expose it directly nicely:
                 // Gradient hash 8x8 = 64 bits.
                 // We can iterate bits.
-                let mut hash_u64: u64 = 0;
-                for (i, bit) in hash_obj.as_bits().iter().enumerate() {
-                     if *bit == 1 {
-                         hash_u64 |= 1 << i;
-                     }
-                }
+                // 3. Extract u64
+                // hash_size(8, 8) = 64 bits = 8 bytes.
+                let bytes = hash_obj.as_bytes();
+                let hash_u64 = if bytes.len() >= 8 {
+                    u64::from_be_bytes(bytes[0..8].try_into().unwrap_or([0; 8]))
+                } else {
+                    0 // Should not happen with 8x8
+                };
 
                 // 3. Diff & Emit
                 if let Some(prev) = last_hash {
@@ -95,7 +97,7 @@ impl VisionPipeline {
         // Mock Capture for Stability/Verification
         // Create a 224x224 image with some noise or solid color
         // For testing, we can just return a consistent image.
-        let mut img = image::DynamicImage::new_rgb8(224, 224);
+        let img = image::DynamicImage::new_rgb8(224, 224);
         // Fill with black (stable)
         // In real world, xcap::Monitor::all() would be used.
         // xcap might be failing to compile on this env.

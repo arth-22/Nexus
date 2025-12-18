@@ -10,6 +10,7 @@ pub enum StateDelta {
     OutputCanceled(OutputId),
     TaskCanceled(String),
     VisualStateUpdate { hash: u64, stability: f32 },
+    LatentUpdate { slot: crate::kernel::latent::LatentSlot },
     Tick(Tick),
 }
 
@@ -48,7 +49,11 @@ pub struct SharedState {
     pub hesitation_detected: bool,
     
     // Vision State
+    // Vision State
     pub visual: VisualState,
+    
+    // Latent Field (Sidecar)
+    pub latents: crate::kernel::latent::LatentState,
 }
 
 impl Default for SharedState {
@@ -65,6 +70,7 @@ impl Default for SharedState {
             last_speech_end: None,
             hesitation_detected: false,
             visual: VisualState::default(), 
+            latents: crate::kernel::latent::LatentState::default(),
         }
     }
 }
@@ -88,6 +94,23 @@ impl SharedState {
             user_active: self.user_speaking,
             active_outputs: self.active_outputs.len(),
             recent_interruptions: self.canceled_tasks.len(),
+            latent_summary: {
+                // Textual Firewall: Summarize slots to natural language
+                let mut summary = String::new();
+                for slot in &self.latents.slots {
+                    use crate::kernel::latent::Modality;
+                    let mod_str = match slot.modality {
+                        Modality::Audio => "Audio",
+                        Modality::Visual => "Visual",
+                        Modality::Text => "Text",
+                    };
+                    // Only mention high confidence slots for now
+                    if slot.confidence > 0.5 {
+                        summary.push_str(&format!("{}: Conf {:.2}; ", mod_str, slot.confidence));
+                    }
+                }
+                if summary.is_empty() { "Quiescent".to_string() } else { summary }
+            },
         }
     }
 
@@ -114,6 +137,14 @@ impl SharedState {
                 // Visual Stability Decay (Physics)
                 // If no update received this tick, decay slightly
                 self.visual.stability_score = (self.visual.stability_score - 0.01).max(0.0);
+                
+                // Latent Decay (Physics)
+                // Decay constant lambda ~ 0.1 for fast decay (Audio), 0.01 for slow (Vision)
+                // confidence_new = confidence * exp(-rate) ~ confidence * (1.0 - rate)
+                self.latents.slots.retain_mut(|slot| {
+                    slot.confidence *= (1.0 - slot.decay_rate);
+                    slot.confidence > 0.05 // Prune dead slots
+                });
             }
             StateDelta::InputReceived(input) => {
                 match input.content {
@@ -167,6 +198,9 @@ impl SharedState {
             StateDelta::VisualStateUpdate { hash, stability } => {
                 self.visual.hash = hash;
                 self.visual.stability_score = stability;
+            }
+            StateDelta::LatentUpdate { slot } => {
+                self.latents.slots.push(slot);
             }
         }
     }

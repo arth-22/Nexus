@@ -123,8 +123,44 @@ impl Reactor {
              // although the state version mismatch will handle it naturally.
         }
 
-        for inp in inputs {
-            self.state.reduce(StateDelta::InputReceived(inp));
+        for inp in inputs.iter() {
+            self.state.reduce(StateDelta::InputReceived(inp.clone()));
+        }
+        
+        // === 3.5 DERIVE LATENTS (Passive Sidecar) ===
+        // Must happen AFTER structural reduction (Scoping Rule).
+        // Bias, do not Override.
+        
+        for inp in inputs.iter() {
+             match &inp.content {
+                 super::event::InputContent::Audio(super::event::AudioSignal::SpeechStart) => {
+                     // High Energy / Uncertainty
+                     self.state.reduce(StateDelta::LatentUpdate {
+                         slot: crate::kernel::latent::LatentSlot {
+                             values: vec![1.0], // Simplified "Energy" vector
+                             confidence: 0.8,
+                             created_at: self.tick,
+                             modality: crate::kernel::latent::Modality::Audio,
+                             decay_rate: 0.1, // Fast decay
+                         }
+                     });
+                 }
+                 super::event::InputContent::Visual(super::event::VisualSignal::PerceptUpdate { .. }) => {
+                     // Concept: Vision is an Anchor. 
+                     // Low Uncertainty if stable.
+                     // We just record the presence of visual ground.
+                      self.state.reduce(StateDelta::LatentUpdate {
+                         slot: crate::kernel::latent::LatentSlot {
+                             values: vec![0.5], // "Stability" vector
+                             confidence: 0.8,
+                             created_at: self.tick,
+                             modality: crate::kernel::latent::Modality::Visual,
+                             decay_rate: 0.01, // Slow decay (Persistence)
+                         }
+                     });
+                 }
+                 _ => {}
+            }
         }
 
         // === 4. PLAN (Async Integration) ===

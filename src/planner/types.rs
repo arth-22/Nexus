@@ -23,4 +23,5 @@ pub struct StateSnapshot {
     pub user_active: bool,
     pub active_outputs: usize,
     pub recent_interruptions: usize,
+    pub latent_summary: String, // Textual firewall for planner
 }
