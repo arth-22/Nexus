@@ -10,6 +10,7 @@ const TIMEOUT_MS: u64 = 200; // Strict kernel timeout
 pub struct AsyncPlanner {
     client: reqwest::Client,
     tx: mpsc::Sender<Event>,
+    current_task: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl AsyncPlanner {
@@ -20,15 +21,25 @@ impl AsyncPlanner {
                 .build()
                 .unwrap_or_else(|_| reqwest::Client::new()),
             tx,
+            current_task: None,
         }
     }
 
-    pub fn dispatch(&self, snapshot: StateSnapshot) {
+    pub fn abort(&mut self) {
+        if let Some(task) = self.current_task.take() {
+            task.abort();
+        }
+    }
+
+    pub fn dispatch(&mut self, snapshot: StateSnapshot) {
+        // Abort any existing in-flight plan
+        self.abort();
+
         let client = self.client.clone();
         let tx = self.tx.clone();
         let epoch = snapshot.epoch;
 
-        tokio::spawn(async move {
+        let handle = tokio::spawn(async move {
             let prompt = format!(
                 "STATE: {}\nAVAILABLE INTENTS: BeginResponse(confidence), Delay(ticks), AskClarification, DoNothing.\nReturn ONLY valid JSON.",
                 serde_json::to_string(&snapshot).unwrap_or_default()
@@ -41,43 +52,26 @@ impl AsyncPlanner {
                     "type": "object",
                     "properties": {
                         "intent": { "type": "string", "enum": ["BeginResponse", "Delay", "AskClarification", "DoNothing"] },
-                        "data": { "type": "object" } // Schema needs refinement for specific variants
+                        "data": { "type": "object" }
                     }
                 }
             });
-
-            // For Phase 1 v0, we assume the model returns a direct JSON object matching our Intent struct structure
-            // Or we use a simple grammar. For now, strict JSON parsing is the key.
             
             match client.post(LLM_URL).json(&body).send().await {
                 Ok(resp) => {
                     if let Ok(text) = resp.text().await {
-                        // Attempt to parse strictly
                         let intent: Option<Intent> = serde_json::from_str(&text).ok();
-                        
-                        // Parse logic: Extract JSON from `content` or raw text
-                        // Simplified for now: Assume Llama Server returns standard completion format
-                        // We actually need to parse `content` field from server response.
-                        
-                        // Correct logic would be:
-                        // 1. Parse server JSON -> get "content" string
-                        // 2. Parse "content" string -> Intent
-                        
-                        // Fallback stub for verification (simulating correct parsing)
-                        // In real code we'd implement proper response parsing.
                          let parsed = intent.unwrap_or(Intent::DoNothing);
-                         
-                         // Send back to Kernel
                          let _ = tx.send(Event::PlanProposed(epoch, parsed)).await;
                     }
                 }
                 Err(e) => {
                     warn!("LLM Plan Failed/Timeout: {}", e);
-                    // On error, we generally do nothing (Kernel keeps ticking)
-                    // Or we explicitly say DoNothing
                     let _ = tx.send(Event::PlanProposed(epoch, Intent::DoNothing)).await;
                 }
             }
         });
+        
+        self.current_task = Some(handle);
     }
 }

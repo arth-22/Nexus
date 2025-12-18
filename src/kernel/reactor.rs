@@ -60,6 +60,13 @@ impl Reactor {
         for delta in cancel_deltas {
             self.state.reduce(delta);
         }
+        
+        if !inputs.is_empty() {
+             // CRITICAL: Input invalidates current planning context. 
+             // Stop the thinker.
+             self.planner.abort();
+        }
+
         for inp in inputs {
             self.state.reduce(StateDelta::InputReceived(inp));
         }
