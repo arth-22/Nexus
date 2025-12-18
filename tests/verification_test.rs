@@ -42,10 +42,7 @@ async fn test_1_interrupt_mid_output() {
     reactor.tick_step(vec![]);
     
     // Tick 13: INTERRUPT!
-    let stop_input = InputEvent {
-        source: "User".to_string(),
-        content: "STOP".to_string(),
-    };
+    let stop_input = InputEvent::text("User", "STOP");
     
     // Step with interrupt
     reactor.tick_step(vec![Event::Input(stop_input)]);

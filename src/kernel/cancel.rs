@@ -1,5 +1,5 @@
 use super::state::StateDelta;
-use super::event::InputEvent; // Assuming cancellation cmds come as inputs for now
+use super::event::{InputEvent, InputContent, AudioSignal}; // Assuming cancellation cmds come as inputs for now
 use std::collections::HashSet;
 
 #[derive(Debug, Default)]
@@ -19,8 +19,13 @@ impl CancellationRegistry {
         let mut deltas = Vec::new();
         
         for input in inputs {
-            // Stub logic: if input is "STOP", cancel everything (Phase 0 simplification)
-            if input.content.trim().eq_ignore_ascii_case("STOP") {
+            let should_cancel = match &input.content {
+                InputContent::Text(t) => t.trim().eq_ignore_ascii_case("STOP"),
+                InputContent::Audio(AudioSignal::SpeechStart) => true,
+                _ => false,
+            };
+
+            if should_cancel {
                  // In a real system, we'd parse the target ID. 
                  // Here we just emit a generic "root_task" cancel for demo
                  deltas.push(StateDelta::TaskCanceled("root_task".to_string()));

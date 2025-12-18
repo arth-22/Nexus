@@ -41,8 +41,12 @@ impl Reactor {
 
     /// Pure Tick Step: Advances State. Returns SideEffects to be executed by the driver.
     /// MUST NOT await I/O or timers.
+    /// 
+    /// **KERNEL LAW**: The Tick is advanced at the VERY START of this step. 
+    /// All reductions and planning occur in the context of the *new* tick.
     pub fn tick_step(&mut self, events: Vec<Event>) -> Vec<SideEffect> {
         self.tick = self.tick.next();
+        self.state.reduce(StateDelta::Tick(self.tick)); // Sync Time
         let mut effects = Vec::new();
 
         // Separate inputs and plans

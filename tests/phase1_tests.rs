@@ -13,7 +13,7 @@ async fn test_a_stale_intent_rejection() {
     assert_eq!(reactor.state.version, 0);
     
     // Simulate Input Event to increment State Version
-    let input = InputEvent { source: "User".into(), content: "Hi".into() };
+    let input = InputEvent::text("User", "Hi");
     reactor.tick_step(vec![Event::Input(input)]);
     assert_eq!(reactor.state.version, 1);
     
@@ -55,7 +55,7 @@ async fn test_b_cancellation_safety() {
     // Assuming dispatch happened.
     
     // 2. Interrupt immediately (Tick 1)
-    let input = InputEvent { source: "User".into(), content: "Stop".into() };
+    let input = InputEvent::text("User", "Stop");
     reactor.tick_step(vec![Event::Input(input)]);
     
     // 3. Assert State Version Advanced
