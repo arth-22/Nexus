@@ -28,5 +28,5 @@ pub struct StateSnapshot {
     pub recent_interruptions: usize,
     pub latent_summary: String, // Textual firewall for planner
     pub meta_mood: String, // "Cautious", "Confident", etc.
-    pub intent_context: crate::intent::IntentContext,
+    pub intent_context: crate::kernel::intent::long_horizon::IntentContext,
 }

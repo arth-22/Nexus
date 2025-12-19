@@ -1,5 +1,7 @@
 use super::types::*;
 use uuid::Uuid;
+use std::hash::{Hash, Hasher};
+use std::collections::hash_map::DefaultHasher;
 
 pub struct IntentArbitrator;
 
@@ -39,6 +41,11 @@ impl IntentArbitrator {
                 hypothesis: IntentHypothesis::Command,
                 confidence: 0.9,
                 source_symbol_ids: vec![symbol_id.to_string()],
+                semantic_hash: {
+                    let mut h = DefaultHasher::new();
+                    text.hash(&mut h);
+                    h.finish()
+                },
                 stability: IntentStability::Stable,
             });
         }
@@ -51,6 +58,11 @@ impl IntentArbitrator {
                     hypothesis: IntentHypothesis::Inquiry,
                     confidence: 0.6,
                     source_symbol_ids: vec![symbol_id.to_string()],
+                    semantic_hash: {
+                         let mut h = DefaultHasher::new();
+                         text.hash(&mut h);
+                         h.finish()
+                    },
                     stability: IntentStability::Unstable, // Needs clarification
                 });
             } else {
@@ -59,6 +71,11 @@ impl IntentArbitrator {
                     hypothesis: IntentHypothesis::Inquiry,
                     confidence: 0.85,
                     source_symbol_ids: vec![symbol_id.to_string()],
+                    semantic_hash: {
+                         let mut h = DefaultHasher::new();
+                         text.hash(&mut h);
+                         h.finish()
+                    },
                     stability: IntentStability::Stable,
                 });
             }
@@ -70,6 +87,11 @@ impl IntentArbitrator {
                 hypothesis: IntentHypothesis::ThinkingAloud,
                 confidence: 0.7,
                 source_symbol_ids: vec![symbol_id.to_string()],
+                semantic_hash: {
+                     let mut h = DefaultHasher::new();
+                     text.hash(&mut h);
+                     h.finish()
+                },
                 stability: IntentStability::Ambiguous,
             });
         }
@@ -80,6 +102,11 @@ impl IntentArbitrator {
                 hypothesis: IntentHypothesis::Statement,
                 confidence: 0.5, // Low confidence by default
                 source_symbol_ids: vec![symbol_id.to_string()],
+                semantic_hash: {
+                     let mut h = DefaultHasher::new();
+                     text.hash(&mut h);
+                     h.finish()
+                },
                 stability: IntentStability::Unstable,
             });
         }

@@ -108,6 +108,7 @@ async fn test_interruption_suspends_intent() {
             hypothesis: IntentHypothesis::Inquiry,
             confidence: 0.8,
             source_symbol_ids: vec!["s1".to_string()],
+            semantic_hash: 0,
             stability: IntentStability::Unstable,
         }
     ]);

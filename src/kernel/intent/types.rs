@@ -10,7 +10,7 @@ pub enum IntentStability {
     Ambiguous,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum IntentHypothesis {
     Inquiry,       // User asking something
     Statement,     // User stating something
@@ -25,6 +25,7 @@ pub struct IntentCandidate {
     pub hypothesis: IntentHypothesis,
     pub confidence: f32, // 0.0 to 1.0
     pub source_symbol_ids: Vec<SymbolId>, // Symbolic Grounding
+    pub semantic_hash: u64, // Derived from content for recurrence matching
     pub stability: IntentStability,
 }
 

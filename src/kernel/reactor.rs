@@ -17,11 +17,12 @@ use super::audio::segment::AudioSegment;
 
 // Memory System
 use crate::memory::{
-    MemoryObserver, MemoryConsolidator, InMemoryEpisodicStore, FileSemanticStore,
+    MemoryObserver, InMemoryEpisodicStore, FileSemanticStore,
     EpisodicStore, SemanticStore // Traits
 };
+use crate::kernel::memory::consolidator::MemoryConsolidator;
 use crate::monitor::monitor::SelfObservationMonitor; // Monitor
-use crate::intent::LongHorizonIntentManager; // Part IX: LHIM
+use crate::kernel::intent::long_horizon::LongHorizonIntentManager;
 
 pub struct Reactor {
     pub receiver: mpsc::Receiver<Event>,
@@ -245,6 +246,22 @@ impl Reactor {
                               let new_intent_state = self.arbitrator.assess(content, source_id, &self.state.intent_state);
                               self.state.reduce(StateDelta::AssessmentUpdate(new_intent_state.clone()));
                               
+                              // Phase H: Memory Ingest (Edge Triggered)
+                              if let crate::kernel::intent::types::IntentState::Stable(cand) = &new_intent_state {
+                                  // Memory
+                                  let memory_deltas = self.consolidator.process_intent(cand, &self.state);
+                                  for d in memory_deltas {
+                                      self.state.reduce(d);
+                                  }
+                                  
+                                  // Phase I: Long-Horizon Intent Registration
+                                  // This is the primary entry point for Intent Creation
+                                  let intent_deltas = self.lhim.register_intent(cand, &self.state, self.tick);
+                                  for d in intent_deltas {
+                                      self.state.reduce(d);
+                                  }
+                              }
+
                               // Decide
                               let dialogue_act = self.arbitrator.decide(&self.state.intent_state); 
                               // (Using state.intent_state which is now updated)
@@ -304,19 +321,42 @@ impl Reactor {
             self.state.reduce(delta);
         }
         
-        // === PART IX: LONG-HORIZON INTENT (INTERRUPTION SUPREMACY) ===
-        // If cancellation occurring (or significant interruption logic), suspend intents.
-        if has_cancellation {
-            // Also if planner interrupted? The cancel_registry handles that.
-            let intent_deltas = self.lhim.handle_interruption(&self.state);
+        // === PART IX: LONG-HORIZON INTENT (INTERRUPTION SUPREMACY & LIFECYCLE) ===
+        
+        // 1. Interruption Supremacy (Suspend Active Intents)
+        // Triggered by: Cancellation OR SpeechStart detected this tick.
+        let mut interruption_detected = has_cancellation;
+        
+        // Check input inputs for SpeechStart
+        if !interruption_detected {
+             for inp in &inputs {
+                 if let crate::kernel::event::InputContent::Audio(crate::kernel::event::AudioSignal::SpeechStart) = &inp.content {
+                     interruption_detected = true;
+                     break;
+                 }
+             }
+        }
+
+        if interruption_detected {
+            let intent_deltas = self.lhim.handle_interruption(&self.state, self.tick);
             for d in intent_deltas {
                 self.state.reduce(d);
             }
         }
-        // Also apply LHIM Tick (Decay)
-        let lhim_deltas = self.lhim.tick(self.tick, &self.state);
-        for d in lhim_deltas {
+
+        // 2. Apply Decay (Time-based monoticity)
+        let decay_deltas = self.lhim.tick(self.tick, &self.state);
+        for d in decay_deltas {
             self.state.reduce(d);
+        }
+
+        // 3. Attempt Resumption (Silent Context Match)
+        // Only if we are NOT currently interrupted/inputting
+        if inputs.is_empty() && !interruption_detected {
+             let resume_deltas = self.lhim.try_resume(&self.state, self.tick);
+             for d in resume_deltas {
+                 self.state.reduce(d);
+             }
         }
         
         if !inputs.is_empty() {
@@ -430,7 +470,8 @@ impl Reactor {
                      }
                      CrystallizationDecision::Delay { ms } => {
                          info!("Gate DELAYED response by {}ms.", ms);
-                         let ticks = (ms as u64) / crate::kernel::time::TICK_MS;
+                         let ticks = (ms as u64) / crate::kernel::time::TICK_MS + 1; // Round up
+                         // +1 to ensure at least 1 tick
                          let (delta_opt, effect_opt) = self.scheduler.schedule(
                              crate::planner::types::Intent::Delay { ticks }, 
                              self.tick, 
@@ -487,20 +528,29 @@ impl Reactor {
         // Drive Memory Lifecycle
         self.episodic.tick(self.tick.frame); // Decay
         
-        let candidates = self.observer.flush();
-        if !candidates.is_empty() {
-             self.consolidator.process(
-                 candidates, 
-                 &mut self.episodic, 
-                 &mut self.semantic, 
-                 self.tick.frame
-             );
-        }
+        // let candidates = self.observer.flush();
+        // if !candidates.is_empty() {
+        //      // Old Consolidator Process - Deprecated by Phase H Kernel Memory
+        //      /*
+        //      self.consolidator.process(
+        //          candidates, 
+        //          &mut self.episodic, 
+        //          &mut self.semantic, 
+        //          self.tick.frame
+        //      );
+        //      */
+        // }
         
         // === SELF OBSERVATION MONITOR TICK ===
         // We feed aggregated observations collected earlier (monitor_obs) to the monitor
         if let Some(delta) = self.monitor.tick(self.tick.frame, &monitor_obs) {
              self.state.reduce(delta);
+        }
+
+        // === PHASE H: MEMORY TICK ===
+        let mem_tick_deltas = self.consolidator.tick(self.tick, &self.state);
+        for d in mem_tick_deltas {
+            self.state.reduce(d);
         }
 
         effects

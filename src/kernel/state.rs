@@ -2,9 +2,10 @@ use super::event::{InputEvent, Output, OutputId, OutputStatus, InputContent, Aud
 use super::presence::{PresenceState, PresenceRequest, PresenceGraph};
 use std::collections::{HashMap, HashSet};
 use crate::kernel::time::Tick;
-use crate::intent::{LongHorizonIntent, IntentId};
+use crate::kernel::intent::long_horizon::{LongHorizonIntent, IntentId};
 use crate::kernel::audio::segment::{AudioSegment, SegmentStatus};
 use crate::kernel::intent::types::IntentState;
+use crate::kernel::memory::types::{MemoryCandidate, MemoryRecord, MemoryId};
 
 #[derive(Debug, Clone)]
 pub struct MetaLatents {
@@ -41,7 +42,7 @@ pub enum StateDelta {
     VisualStateUpdate { hash: u64, stability: f32 },
     LatentUpdate { slot: crate::kernel::latent::LatentSlot },
     MetaLatentUpdate { delta: MetaLatents }, 
-    IntentUpdate { intent: LongHorizonIntent },
+    LongHorizonIntentUpdate(LongHorizonIntent),
     PresenceTransition(PresenceRequest),
     PresenceUpdate(PresenceState),
     // Audio Buffering Deltas
@@ -53,6 +54,14 @@ pub enum StateDelta {
     /// Phase G: Intent Assessment
     AssessmentUpdate(IntentState),
     Tick(Tick),
+    // Phase H: Memory Consolidation
+    MemoryCandidateCreated(MemoryCandidate),
+    MemoryCandidateReinforced(MemoryId, Tick),
+    MemoryPromoted(MemoryRecord),
+    MemoryDecayed { id: MemoryId, new_strength: f32 },
+    MemoryForgotten(MemoryId),
+    MemoryCandidateRemoved(MemoryId), // Specific removal (e.g. after promotion)
+    MemoryAccessed { id: MemoryId, time: Tick },
 }
 
 #[derive(Debug, Clone)]
@@ -111,7 +120,12 @@ pub struct SharedState {
     pub active_segment_id: Option<String>,
 
     // Phase G: Intent Arbitration
+    // Phase G: Intent Arbitration
     pub intent_state: IntentState,
+
+    // Phase H: Memory Consolidation
+    pub memory_candidates: HashMap<MemoryId, MemoryCandidate>,
+    pub long_term_memory: HashMap<MemoryId, MemoryRecord>,
 }
 
 impl Default for SharedState {
@@ -135,6 +149,8 @@ impl Default for SharedState {
             audio_segments: HashMap::new(),
             active_segment_id: None,
             intent_state: IntentState::default(),
+            memory_candidates: HashMap::new(),
+            long_term_memory: HashMap::new(),
         }
     }
 }
@@ -144,7 +160,7 @@ impl SharedState {
         Self::default()
     }
 
-    pub fn snapshot(&self, tick: Tick, intent_context: crate::intent::IntentContext) -> crate::planner::types::StateSnapshot {
+    pub fn snapshot(&self, tick: Tick, intent_context: crate::kernel::intent::long_horizon::IntentContext) -> crate::planner::types::StateSnapshot {
         crate::planner::types::StateSnapshot {
             epoch: crate::planner::types::PlanningEpoch {
                 tick,
@@ -275,8 +291,8 @@ impl SharedState {
                 // Replacement update (Monitor calculates new values)
                 self.meta_latents = delta;
             }
-            StateDelta::IntentUpdate { intent } => {
-                self.active_intents.insert(intent.id, intent);
+            StateDelta::LongHorizonIntentUpdate(intent) => {
+                self.active_intents.insert(intent.id.clone(), intent);
             }
             StateDelta::PresenceTransition(request) => {
                 if let Some(new_state) = PresenceGraph::transition(self.presence, request) {
@@ -319,6 +335,40 @@ impl SharedState {
             }
             StateDelta::AssessmentUpdate(new_state) => {
                 self.intent_state = new_state;
+            }
+            // Phase H: Memory Reduction
+            StateDelta::MemoryCandidateCreated(candidate) => {
+                self.memory_candidates.insert(candidate.id.clone(), candidate);
+            }
+            StateDelta::MemoryCandidateReinforced(id, tick) => {
+                if let Some(candidate) = self.memory_candidates.get_mut(&id) {
+                    candidate.reinforcement_count += 1;
+                    candidate.last_reinforced_at = tick;
+                }
+            }
+            StateDelta::MemoryPromoted(record) => {
+                // Remove from candidates if promoted (Consolidator handles emitting Forgotten/Promoted pair, but good to ensure uniqueness)
+                // We just insert into LTM here.
+                self.long_term_memory.insert(record.id.clone(), record);
+            }
+            StateDelta::MemoryDecayed { id, new_strength } => {
+                if let Some(record) = self.long_term_memory.get_mut(&id) {
+                    record.strength = new_strength;
+                }
+            }
+            StateDelta::MemoryForgotten(id) => {
+                // Check both stores, though IDs should be unique / types distinct usually.
+                // Assuming ID space is shared or we try both.
+                self.memory_candidates.remove(&id);
+                self.long_term_memory.remove(&id);
+            }
+            StateDelta::MemoryCandidateRemoved(id) => {
+                self.memory_candidates.remove(&id);
+            }
+            StateDelta::MemoryAccessed { id, time } => {
+                if let Some(record) = self.long_term_memory.get_mut(&id) {
+                    record.last_accessed_at = time;
+                }
             }
         }
     }
