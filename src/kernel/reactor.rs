@@ -33,6 +33,11 @@ pub enum KernelMode {
 }
 
 
+#[derive(Debug, Clone, Copy)]
+pub struct ReactorConfig {
+    pub safe_mode: bool,
+}
+
 pub struct Reactor {
     pub receiver: mpsc::Receiver<Event>,
     // We need a sender clone for the planner
@@ -68,10 +73,20 @@ pub struct Reactor {
     
     // Phase K: Onboarding Lock
     pub mode: KernelMode,
+
+    // New config field
+    pub config: ReactorConfig,
 }
 
 impl Reactor {
-    pub fn new(receiver: mpsc::Receiver<Event>, tx: mpsc::Sender<Event>) -> Self {
+    pub fn new(receiver: mpsc::Receiver<Event>, sender: mpsc::Sender<Event>, config: ReactorConfig) -> Self {
+        let _tx_clone = sender.clone(); 
+        let mut telemetry = TelemetryRecorder::new();
+        
+        if config.safe_mode {
+             telemetry.record(super::telemetry::event::TelemetryEvent::SafeModeActive);
+        }
+
         // Initialize Semantic Store
         // For now, store in the current directory or a known location.
         let semantic_path = PathBuf::from("nexus_semantic_memory.json");
@@ -82,12 +97,12 @@ impl Reactor {
 
         Self {
             receiver,
-            _tx_clone: tx.clone(),
+            _tx_clone: sender.clone(), // Use the provided sender
             state: SharedState::new(),
             scheduler: Scheduler,
             cancel_registry: CancellationRegistry::new(),
             tick: Tick::new(),
-            planner: AsyncPlanner::new(tx),
+            planner: AsyncPlanner::new(sender.clone()), // Use the provided sender
             last_planned_version: None,
             
             observer: MemoryObserver::new(),
@@ -99,8 +114,9 @@ impl Reactor {
             audio_monitor: crate::kernel::audio::monitor::AudioMonitor::new(48000),
             lhim: LongHorizonIntentManager::new(),
             arbitrator: crate::kernel::intent::arbitrator::IntentArbitrator::new(),
-            telemetry: TelemetryRecorder::new(),
+            telemetry, // Use the telemetry created above
             mode: KernelMode::Active, // Default to Active (Safe for Tests), Driver will override if needed.
+            config, // Add the config field
         }
     }
 
@@ -326,6 +342,19 @@ impl Reactor {
 
                               inputs.push(inp); // Propagate text to other systems
                           },
+
+                         super::event::InputContent::MemoryConsentResponse { key, state } => {
+                             self.state.reduce(StateDelta::MemoryConsentResolved {
+                                 key: key.clone(),
+                                 state: state.clone(),
+                                 resolved_at: self.tick,
+                             });
+                             // Telemetry
+                             self.telemetry.record(TelemetryEvent::MemoryEvent {
+                                 kind: crate::kernel::telemetry::event::MemoryEventKind::AttributesUpdated, // Or new ConsentResolved kind? Use AttributesUpdated for now.
+                                 memory_id: "consent_update".to_string(), // Metadata
+                             });
+                         },
                          _ => {
                              inputs.push(inp);
                          }
@@ -635,8 +664,23 @@ impl Reactor {
         }
 
         // === PHASE H: MEMORY TICK ===
-        let mem_tick_deltas = self.consolidator.tick(self.tick, &self.state, &mut self.telemetry);
+        // SAFE MODE CHECK: Block memory consolidation
+        let mem_tick_deltas = if self.config.safe_mode {
+            Vec::new() // No memory logic in safe mode
+        } else {
+            self.consolidator.tick(self.tick, &self.state, &mut self.telemetry)
+        };
+
         for d in mem_tick_deltas {
+            if let StateDelta::MemoryConsentAsked(key, _) = &d {
+                 // Double check safe mode (redundant but safe)
+                 if self.config.safe_mode { continue; }
+
+                 effects.push(SideEffect::AskMemoryConsent { 
+                     key: key.clone(), 
+                     prompt_id: Uuid::new_v4().to_string() 
+                 });
+            }
             self.state.reduce(d);
         }
 
@@ -774,6 +818,12 @@ impl Reactor {
                         } else {
                             warn!("[TRANSCRIPTION] Segment not found in state: {}", segment_id);
                         }
+                    }
+
+                    SideEffect::AskMemoryConsent { key, prompt_id: _ } => {
+                        // In Reactor test driver, we just log it. 
+                        // Real driver handles it in main.rs
+                        println!("[REACTOR-LOG] Ask Consent for key: {:?}", key);
                     }
                 }
             }

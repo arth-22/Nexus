@@ -53,6 +53,16 @@ pub enum TelemetryEvent {
     },
 
     Lifecycle(LifecycleEvent),
+
+    SafeModeActive,
+
+    SessionSummary {
+        duration_ticks: u64,
+        silence_ratio: f32,
+        interruptions: u64,
+        resumed_intents: u64,
+        memory_consents: u64,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -77,6 +87,7 @@ pub enum MemoryEventKind {
     Promoted,
     Decayed,
     Forgotten,
+    AttributesUpdated,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

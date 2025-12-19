@@ -5,7 +5,8 @@ use crate::kernel::time::Tick;
 use crate::kernel::intent::long_horizon::{LongHorizonIntent, IntentId};
 use crate::kernel::audio::segment::{AudioSegment, SegmentStatus};
 use crate::kernel::intent::types::IntentState;
-use crate::kernel::memory::types::{MemoryCandidate, MemoryRecord, MemoryId};
+use crate::kernel::memory::types::{MemoryCandidate, MemoryRecord, MemoryId, MemoryKey};
+use crate::kernel::memory::consent::{MemoryConsent, MemoryConsentState};
 
 #[derive(Debug, Clone)]
 pub struct MetaLatents {
@@ -62,6 +63,9 @@ pub enum StateDelta {
     MemoryForgotten(MemoryId),
     MemoryCandidateRemoved(MemoryId), // Specific removal (e.g. after promotion)
     MemoryAccessed { id: MemoryId, time: Tick },
+    // Phase L: Memory Consent
+    MemoryConsentAsked(MemoryKey, Tick),
+    MemoryConsentResolved { key: MemoryKey, state: MemoryConsentState, resolved_at: Tick },
 }
 
 #[derive(Debug, Clone)]
@@ -126,6 +130,8 @@ pub struct SharedState {
     // Phase H: Memory Consolidation
     pub memory_candidates: HashMap<MemoryId, MemoryCandidate>,
     pub long_term_memory: HashMap<MemoryId, MemoryRecord>,
+    // Phase L: Consent State (Human-Aligned)
+    pub memory_consent: HashMap<MemoryKey, MemoryConsent>,
 }
 
 impl Default for SharedState {
@@ -151,6 +157,7 @@ impl Default for SharedState {
             intent_state: IntentState::default(),
             memory_candidates: HashMap::new(),
             long_term_memory: HashMap::new(),
+            memory_consent: HashMap::new(),
         }
     }
 }
@@ -365,9 +372,29 @@ impl SharedState {
             StateDelta::MemoryCandidateRemoved(id) => {
                 self.memory_candidates.remove(&id);
             }
+
             StateDelta::MemoryAccessed { id, time } => {
                 if let Some(record) = self.long_term_memory.get_mut(&id) {
                     record.last_accessed_at = time;
+                }
+            }
+            StateDelta::MemoryConsentAsked(key, tick) => {
+                let consent = MemoryConsent::new(key.clone(), tick);
+                self.memory_consent.insert(key, consent);
+            }
+            StateDelta::MemoryConsentResolved { key, state, resolved_at } => {
+                if let Some(consent) = self.memory_consent.get_mut(&key) {
+                    consent.state = state;
+                    consent.resolved_at = Some(resolved_at);
+                } else {
+                     // Should not happen, but if resolved without being strictly "asked" (maybe stale),
+                     // we can insert it.
+                     // But typically 'Asked' creates the unknown state first.
+                     // If we resolve an unknown key, we insert it.
+                     let mut consent = MemoryConsent::new(key.clone(), resolved_at);
+                     consent.state = state;
+                     consent.resolved_at = Some(resolved_at);
+                     self.memory_consent.insert(key, consent);
                 }
             }
         }

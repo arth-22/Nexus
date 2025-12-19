@@ -60,7 +60,9 @@ async fn main() {
     // Main loop runs 'reactor.run()'. If we keep `capture` in a variable here, it lives until main ends.
     // That is sufficient.
 
-    let mut reactor = Reactor::new(rx_input, tx_input.clone());
+    // Initial Config
+    let config = nexus::kernel::reactor::ReactorConfig { safe_mode: false };
+    let mut reactor = Reactor::new(rx_input, tx_input.clone(), config);
     
     // 4. Spawn Input Reader (Stdin)
     tokio::spawn(async move {

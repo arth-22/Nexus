@@ -96,6 +96,7 @@ pub fn compute_snapshot(events: &VecDeque<TelemetryEvent>) -> TelemetrySnapshot 
                     MemoryEventKind::Promoted => snap.memory_stats.promoted += 1,
                     MemoryEventKind::Decayed => snap.memory_stats.decayed += 1,
                     MemoryEventKind::Forgotten => snap.memory_stats.forgotten += 1,
+                    MemoryEventKind::AttributesUpdated => {} // Tracking only
                 }
             }
             TelemetryEvent::DialogueAct { act } => {

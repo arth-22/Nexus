@@ -57,6 +57,11 @@ pub enum InputContent {
         segment_id: String, // Explicit gating trigger
     },
     AudioStatus(AudioStatus),
+    // Phase L: Memory Consent
+    MemoryConsentResponse {
+        key: crate::kernel::memory::types::MemoryKey,
+        state: crate::kernel::memory::consent::MemoryConsentState,
+    },
 }
 
 // Helper for legacy text compatibility

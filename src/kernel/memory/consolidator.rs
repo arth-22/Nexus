@@ -116,33 +116,62 @@ impl MemoryConsolidator {
         for cand in state.memory_candidates.values() {
             let age = current_tick.frame.saturating_sub(cand.created_at.frame);
             
-            // Check Promotion Gating
-            // Rule: Reinforcement >= 3 AND Age >= MIN_WINDOW
-            if cand.reinforcement_count >= 3 && age >= MIN_CONSOLIDATION_WINDOW {
+            let mut should_promote = false;
+            let mut ask_consent = false;
+
+            // Basic Eligibility: Reinforcement >= 2 (Strict), Age >= MIN_WINDOW
+            if cand.reinforcement_count >= 2 && age >= MIN_CONSOLIDATION_WINDOW {
+                 // Check Consent
+                 let consent_state = state.memory_consent.get(&cand.key)
+                                     .map(|c| c.state)
+                                     .unwrap_or(crate::kernel::memory::consent::MemoryConsentState::Unknown);
+
+                 match consent_state {
+                     crate::kernel::memory::consent::MemoryConsentState::Granted => {
+                         should_promote = true;
+                     }
+                     crate::kernel::memory::consent::MemoryConsentState::Declined | crate::kernel::memory::consent::MemoryConsentState::Ignored => {
+                         // Never promote
+                     }
+                     crate::kernel::memory::consent::MemoryConsentState::Unknown => {
+                         // Strict Heuristic: Statement Only + Very High Confidence
+                         let is_statement = matches!(cand.intent.hypothesis, crate::kernel::intent::types::IntentHypothesis::Statement); 
+                         let high_confidence = cand.intent.confidence >= 0.95;
+                         
+                         if is_statement && high_confidence {
+                             ask_consent = true;
+                         }
+                     }
+                 }
+            }
+
+            if should_promote {
                 // PROMOTE
                 let record = MemoryRecord {
-                    id: cand.id.clone(), // Keep same ID? Or new? Let's keep same ID for tracking.
+                    id: cand.id.clone(),
                     intent: cand.intent.clone(),
                     first_committed_at: current_tick,
                     last_accessed_at: current_tick,
                     strength: 0.5, // Initial strength
                 };
                 deltas.push(StateDelta::MemoryPromoted(record));
-                deltas.push(StateDelta::MemoryCandidateRemoved(cand.id.clone())); // Remove from candidates STARTS HERE
+                deltas.push(StateDelta::MemoryCandidateRemoved(cand.id.clone()));
                 
                 telemetry.record(TelemetryEvent::MemoryEvent {
                     kind: MemoryEventKind::Promoted,
                     memory_id: cand.id.clone(),
                 });
+            } else if ask_consent {
+                // Ask for consent, do NOT promote yet.
+                // This delta will trigger the Scheduler/Reactor to emit the SideEffect.
+                deltas.push(StateDelta::MemoryConsentAsked(cand.key.clone(), current_tick));
             }
             
-            // Check Pruning
+            // Check Pruning (Separate from promotion decision)
             // Rule: Idle for too long without promotion
             let idle_time = current_tick.frame.saturating_sub(cand.last_reinforced_at.frame);
             if idle_time > MAX_CANDIDATE_AGE {
                 deltas.push(StateDelta::MemoryCandidateRemoved(cand.id.clone()));
-                // Telemetry: Pruned? We don't have Pruned in EventKind.
-                // Maybe "Forgotten"?
             }
         }
 

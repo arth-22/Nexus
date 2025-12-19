@@ -239,29 +239,136 @@ dom.mic.addEventListener('click', () => {
 
 // --- 6. Initialization ---
 window.addEventListener('DOMContentLoaded', async () => {
-    // Ensure input has focus for ambient capture
+    // Ensure input has focus
     dom.input.focus();
-    dom.input.addEventListener('blur', () => {
-        // Optional: Auto-refocus or let it go?
-        // "Non-demanding" -> Let it go.
+
+    // Listen for Access Denied (Strict Gate)
+    listen('access-denied', () => {
+        console.log('[Access] Denied.');
+        document.getElementById('access-denied-screen').style.display = 'flex';
+        // Hide everything else
+        dom.canvas.style.display = 'none';
+        dom.input.disabled = true;
     });
 
+    // Handle Boot Flow
     // Phase K: Check Onboarding Status
     const onboardingComplete = await OnboardingManager.check();
     console.log('[Init] Onboarding Complete:', onboardingComplete);
 
     if (!onboardingComplete) {
         OnboardingManager.start();
-        // Wire button with safety
         onboardingButton.addEventListener('click', (e) => {
             e.preventDefault();
             e.stopPropagation();
             OnboardingManager.next();
         });
     } else {
-        // Signal Ready -> Triggers Core to push Context
-        invoke('ui_attach');
-        // Default Mic to ON for Phase D testing
-        dom.mic.click();
+        // Phase M: One-Time Welcome Check
+        // We need to know if welcome was shown. 
+        // We reuse the onboarding state for this, or check a separate flag?
+        // Current Main.rs `get_onboarding_status` returns bool.
+        // We need `get_full_onboarding_state` or assume we just show it if we haven't seen it in session? 
+        // No, persistent.
+        // Let's implement `mark_welcome_seen` in main.rs and a check here.
+        // Updating main.rs to expose welcome_shown is needed, or we just call a command.
+
+        // Command: `check_welcome_needed` -> bool
+        // If true -> Show Intro -> On Click -> `mark_welcome_seen`
+
+        // Since I didn't add `check_welcome_needed` command specifically yet, I'll rely on `invoke` returning the struct if I update the command, 
+        // OR I update main.rs to add that command now.
+        // WAIT. I did update `OnboardingState` struct, but `get_onboarding_status` returns bool.
+        // I should update main.rs to expose the full state or a specific check.
+        // For now, I will assume I can update `get_onboarding_status` or add a new one.
+        // Let's assume I add `should_show_welcome` to main.rs. I'll add that in the next step to be safe.
+        // Or I can update `get_onboarding_status` to return object?
+        // Stick to plan: "Update shell/renderer.js: Logic for Access Gate & One-Time Welcome"
+        // I will assume `should_show_welcome` command exists or I'll add it.
+        // Let's implement the JS assuming it exists, then go fix Main.rs if I missed it.
+
+        // Actually, looking at main.rs, I only updated the struct. `get_onboarding_status` returns `bool`.
+        // I need to update main.rs to return the full state or a specific flag.
+        // I will do that in the next turn (Driver Update Part 2).
+
+        // For now, write the JS logic assuming `should_show_welcome` returns true/false.
+
+        const showWelcome = await invoke('should_show_welcome').catch(() => false); // Fallback false if command missing
+
+        if (showWelcome) {
+            const intro = document.getElementById('intro-screen');
+            const beginBtn = document.getElementById('intro-begin');
+            intro.style.display = 'flex';
+
+            beginBtn.onclick = async () => {
+                await invoke('mark_welcome_seen');
+                intro.style.display = 'none';
+                startKeySystems();
+            };
+        } else {
+            startKeySystems();
+        }
     }
 });
+
+function startKeySystems() {
+    invoke('ui_attach');
+    // Default Mic to ON for Phase D/M testing (unless changed by user preference later)
+    dom.mic.click();
+}
+// --- Phase L: Memory Consent ---
+const ConsentManager = {
+    overlay: document.getElementById('memory-consent-container'),
+    yesBtn: document.getElementById('consent-yes'),
+    noBtn: document.getElementById('consent-no'),
+    currentKey: null,
+    timer: null,
+
+    init() {
+        if (this.yesBtn) this.yesBtn.onclick = () => this.resolve('granted');
+        if (this.noBtn) this.noBtn.onclick = () => this.resolve('declined');
+
+        listen('ask-memory-consent', (event) => {
+            console.log('[Consent] Asked for key:', event.payload.key);
+            this.show(event.payload.key);
+        });
+    },
+
+    show(key) {
+        if (this.timer) clearTimeout(this.timer);
+        this.currentKey = key;
+
+        // Render UI
+        this.overlay.classList.remove('consent-hidden');
+
+        // Auto-dismiss (Ignored)
+        // 10 seconds timeout
+        this.timer = setTimeout(() => {
+            console.log('[Consent] Timed out -> Ignored');
+            this.resolve('ignored');
+        }, 10000);
+    },
+
+    hide() {
+        this.overlay.classList.add('consent-hidden');
+        if (this.timer) clearTimeout(this.timer);
+        this.currentKey = null;
+    },
+
+    resolve(state) {
+        if (!this.currentKey) return;
+
+        // Invoke Kernel Command
+        // We need to serialize key back to string if it is an object
+        const keyJson = JSON.stringify(this.currentKey);
+
+        invoke('resolve_memory_consent', { keyJson, state })
+            .catch(err => console.error('[Consent] Failed to resolve:', err));
+
+        console.log(`[Consent] Resolved: ${state}`);
+        this.hide();
+    }
+};
+
+// Start logic
+ConsentManager.init();

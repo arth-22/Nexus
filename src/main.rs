@@ -10,8 +10,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Create event channel
     let (tx, rx) = mpsc::channel(100);
 
-    // Initialize Reactor
-    let mut reactor = Reactor::new(rx, tx);
+    // 2. Setup Reactor
+    let config = nexus::kernel::reactor::ReactorConfig { safe_mode: false };
+    let mut reactor = Reactor::new(rx, tx.clone(), config);
 
     // Spawn Reactor
     let reactor_handle = tokio::spawn(async move {

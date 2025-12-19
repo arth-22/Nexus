@@ -12,6 +12,8 @@ use std::sync::{Arc, Mutex};
 use std::path::PathBuf;
 use std::fs;
 use serde::{Serialize, Deserialize};
+mod alpha;
+use alpha::AlphaAccess;
 
 struct AudioState(audio_capture::AudioController);
 struct CoreSender(tokio::sync::mpsc::Sender<Event>);
@@ -21,6 +23,8 @@ struct ReactorHandle(Arc<Mutex<nexus::kernel::reactor::Reactor>>);
 struct OnboardingState {
     completed: bool,
     completed_at: Option<u64>,
+    #[serde(default)]
+    welcome_shown: bool,
 }
 
 fn onboarding_file_path(app: &tauri::AppHandle) -> PathBuf {
@@ -59,6 +63,21 @@ fn get_onboarding_status(app: tauri::AppHandle) -> bool {
     state.completed
 }
 
+// --- Phase M: Welcome Logic ---
+#[tauri::command]
+fn should_show_welcome(app: tauri::AppHandle) -> bool {
+    let state = load_onboarding_state(&app);
+    !state.welcome_shown
+}
+
+#[tauri::command]
+fn mark_welcome_seen(app: tauri::AppHandle) {
+    let mut state = load_onboarding_state(&app);
+    state.welcome_shown = true;
+    save_onboarding_state(&app, &state);
+    println!("[Welcome] Marked as seen.");
+}
+
 #[tauri::command]
 fn complete_onboarding(app: tauri::AppHandle, reactor_handle: tauri::State<ReactorHandle>) {
     // 1. Persist
@@ -68,6 +87,7 @@ fn complete_onboarding(app: tauri::AppHandle, reactor_handle: tauri::State<React
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_secs()),
+        welcome_shown: false, // Explicitly false so they see it next
     };
     save_onboarding_state(&app, &state);
     println!("[Onboarding] State persisted.");
@@ -110,6 +130,20 @@ fn toggle_mic(active: bool, state: tauri::State<AudioState>, app: tauri::AppHand
 
 #[tauri::command]
 async fn ui_attach(app_handle: tauri::AppHandle, core_state: tauri::State<'_, CoreSender>) -> Result<(), ()> {
+    // Phase M: Check Access
+    // Note: We already check access in setup(), but this check protects late-binding UI.
+    if let Some(access) = AlphaAccess::load(&app_handle) { 
+       // Logic to check specific UI permissions if needed
+    }
+    
+    // We'll trust the Setup hook to handle the "not spawning" part.
+    // Here we just tell the UI what's up.
+    let access = crate::alpha::AlphaAccess::load(&app_handle);
+    if access.is_none() || !access.unwrap().enabled {
+        app_handle.emit("access-denied", ()).unwrap_or(());
+        return Ok(());
+    }
+
     println!("[UI->Core] UI Attached. Pushing Context...");
     
     // 1. Send Mock Context to UI
@@ -143,6 +177,30 @@ async fn ui_attach(app_handle: tauri::AppHandle, core_state: tauri::State<'_, Co
     Ok(())
 }
 
+#[tauri::command]
+fn resolve_memory_consent(key_json: String, state: String, core_state: tauri::State<'_, CoreSender>) {
+    // Deserialize Key
+    if let Ok(key) = serde_json::from_str::<nexus::kernel::memory::types::MemoryKey>(&key_json) {
+        let consent_state = match state.as_str() {
+            "granted" => nexus::kernel::memory::consent::MemoryConsentState::Granted,
+            "declined" => nexus::kernel::memory::consent::MemoryConsentState::Declined,
+            _ => nexus::kernel::memory::consent::MemoryConsentState::Ignored,
+        };
+        
+        let evt = Event::Input(nexus::kernel::event::InputEvent {
+            source: "Frontend".to_string(),
+            content: nexus::kernel::event::InputContent::MemoryConsentResponse {
+                key,
+                state: consent_state,
+            }
+        });
+        
+        let _ = core_state.0.try_send(evt);
+    } else {
+        println!("[Error] Failed to deserialize MemoryKey in resolve_memory_consent");
+    }
+}
+
 fn main() {
     // 0. Init Logger
     tracing_subscriber::fmt::init();
@@ -150,8 +208,18 @@ fn main() {
     // 1. Setup Channels
     let (tx, rx) = tokio::sync::mpsc::channel(100);
     
+    // Parses CLI args to check for safe-mode
+    // Note: Tauri's arg parsing happens inside run context usually, but we need it for Kernel init
+    // We'll rely on env var "NEXUS_SAFE_MODE=1" or simple arg scan for this alpha phase
+    let safe_mode = std::env::args().any(|arg| arg == "--safe-mode") || std::env::var("NEXUS_SAFE_MODE").is_ok();
+
+    if safe_mode {
+        println!("[Main] Safe Mode Detected. Core memory disabled.");
+    }
+
     // 2. Setup Reactor (The Core)
-    let reactor = nexus::kernel::reactor::Reactor::new(rx, tx.clone());
+    let config = nexus::kernel::reactor::ReactorConfig { safe_mode };
+    let reactor = nexus::kernel::reactor::Reactor::new(rx, tx.clone(), config);
     let reactor_arc = Arc::new(Mutex::new(reactor));
     
     // 3. Audio Actor (Shell -> AudioThread -> Core)
@@ -180,12 +248,48 @@ fn main() {
             toggle_mic,
             ui_attach,
             get_onboarding_status,
-            complete_onboarding
+            complete_onboarding,
+            resolve_memory_consent,
+            should_show_welcome,
+            mark_welcome_seen
         ])
-        .setup(move |app| {
-            let handle = app.handle().clone();
+
+    .setup(move |app| {
+        let handle = app.handle().clone();
+
+        // --- Phase M: Strict Access Gate ---
+        let alpha_access = AlphaAccess::load(&handle);
+        
+        let kernel_allowed = if let Some(access) = &alpha_access {
+            access.enabled
+        } else {
+            false
+        };
+
+        if !kernel_allowed {
+            // SILENT DENIAL - Do not spawn audio or kernel.
+            // Just emit denial event for frontend to show static screen.
+            // We use a small delay to ensure Frontend works, or we wait for UI attach.
+            // We will do it on UI attach via event.
+            // But we must NOT spawn threads.
+            println!("[AccessBarrier] Alpha access missing or disabled. Kernel suppressed.");
+            // We exit this closure without spawning threads.
             
-            // Phase K: Check onboarding and set initial kernel mode
+            // Set up a listener for UI attach to tell it Access Denied?
+            // Actually, we can just *not* do anything.
+            // But main.rs UI attach command expects CoreSender state.
+            // If we don't spawn threads, we might panic on missing state usage?
+            // Tauri setup: we already managed CoreSender globally.
+            // But the RX end is in the reactor.
+            // The TX is managed.
+            
+            // This is "Inert Mode".
+            return Ok(());
+        }
+
+        // --- Access Granted: Proceed to Boot ---
+        
+        // Phase K: Check onboarding and set initial kernel mode
             let onboarding_state = load_onboarding_state(&handle);
             {
                 if let Ok(mut reactor) = reactor_arc.lock() {
@@ -201,7 +305,10 @@ fn main() {
             
             // Clone Arc for the kernel thread
             let reactor_for_thread = reactor_arc.clone();
+            // Clone Arc for the kernel thread
+            let reactor_for_thread = reactor_arc.clone();
             let kernel_tx = tx.clone();
+            let handle_for_thread = handle.clone();
             
             // Spawn Kernel Thread
             std::thread::spawn(move || {
@@ -301,6 +408,12 @@ fn main() {
                                 },
                                 nexus::kernel::scheduler::SideEffect::RequestTranscription { segment_id } => {
                                     println!("[TRANSCRIPTION] Requested for: {}", segment_id);
+                                }
+                                nexus::kernel::scheduler::SideEffect::AskMemoryConsent { key, prompt_id: _ } => {
+                                    println!("[CONSENT] Asking user for key: {:?}", key);
+                                    let _ = handle_for_thread.emit("ask-memory-consent", serde_json::json!({
+                                        "key": key
+                                    }));
                                 }
                             }
                         }

@@ -9,6 +9,27 @@
 </head>
 
 <body class="state-dormant">
+    <!-- Phase M: Access Denied Screen (Strict) -->
+    <div id="access-denied-screen" style="display: none;">
+        <div class="center-content">
+            <p class="denied-text">Alpha Access Required.</p>
+        </div>
+    </div>
+
+    <!-- Phase M: Boring Welcome Screen -->
+    <div id="intro-screen" style="display: none;">
+        <div class="center-content text-left">
+            <p class="intro-line">This is a quiet system.</p>
+            <p class="intro-line">It does not rush.</p>
+            <p class="intro-line">It does not need constant input.</p>
+            <br>
+            <p class="intro-line">Use it the way you think.</p>
+            <p class="intro-line">Stop when you want.</p>
+            <br><br>
+            <button id="intro-begin">Begin</button>
+        </div>
+    </div>
+
     <!-- Phase K: Onboarding Overlay -->
     <div id="onboarding-overlay" style="display: none;">
         <div id="onboarding-content">
@@ -25,6 +46,15 @@
     <!-- Region 2: The Thinking Canvas -->
     <div id="canvas">
         <!-- Text fragments injected here -->
+    </div>
+
+    <!-- Phase L: Memory Consent (Hidden by default) -->
+    <div id="memory-consent-container" class="consent-hidden">
+        <span class="consent-text">Should I remember this?</span>
+        <div class="consent-buttons">
+            <button id="consent-yes">Yes</button>
+            <button id="consent-no">No</button>
+        </div>
     </div>
 
     <!-- Region 3: Input Affordances -->

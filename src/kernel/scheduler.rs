@@ -11,6 +11,8 @@ pub enum SideEffect {
     SpawnAudio(OutputId, String),
     StopAudio,
     RequestTranscription { segment_id: String },
+    // Phase L
+    AskMemoryConsent { key: crate::kernel::memory::types::MemoryKey, prompt_id: String },
 }
 
 impl Scheduler {
