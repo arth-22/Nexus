@@ -53,6 +53,10 @@ impl AudioMonitor {
         self.system_speaking = speaking;
     }
 
+    pub fn is_system_speaking(&self) -> bool {
+        self.system_speaking
+    }
+
     /// Process a chunk of raw audio float samples.
     /// Returns Some(Signal) if a state transition occurs.
     pub fn process(&mut self, samples: &[f32]) -> Option<AudioSignal> {

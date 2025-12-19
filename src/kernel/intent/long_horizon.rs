@@ -1,9 +1,11 @@
 use serde::{Deserialize, Serialize};
-use uuid::Uuid;
+
 use crate::kernel::time::Tick;
 use crate::kernel::state::{SharedState, StateDelta};
 use crate::kernel::intent::types::{IntentCandidate, IntentHypothesis};
 use std::collections::HashMap;
+use crate::kernel::telemetry::recorder::TelemetryRecorder;
+use crate::kernel::telemetry::event::TelemetryEvent;
 
 pub type IntentId = String;
 
@@ -32,89 +34,111 @@ pub struct LongHorizonIntent {
 // Config Constants
 const DECAY_RATE_PER_TICK: f32 = 0.9997; // Very slow decay
 const DORMANCY_THRESHOLD: f32 = 0.3;
-const INVALIDATION_THRESHOLD: f32 = 0.1;
-const RESUME_THRESHOLD: f32 = 0.3;
+const RESUME_THRESHOLD: f32 = 0.6; // Lower score, but context match boosts confidence
+const INVALIDATION_THRESHOLD: f32 = 0.1; // Hard kill line
 
-pub struct LongHorizonIntentManager;
+pub struct LongHorizonIntentManager {
+    pub active_intents: HashMap<IntentId, LongHorizonIntent>,
+}
 
 impl LongHorizonIntentManager {
     pub fn new() -> Self {
-        Self
+        Self {
+            active_intents: HashMap::new(),
+        }
     }
 
     /// Register a Stable Phase G intent as a Long-Horizon Intent.
     /// If an equivalent intent is Suspended/Dormant, reinforce and resume it.
     /// Else create new.
-    pub fn register_intent(&self, candidate: &IntentCandidate, state: &SharedState, current_tick: Tick) -> Vec<StateDelta> {
+    pub fn register_intent(&mut self, candidate: &IntentCandidate, _state: &SharedState, current_tick: Tick, telemetry: &mut TelemetryRecorder) -> Vec<StateDelta> {
         let mut deltas = Vec::new();
-
-        // 1. Check for Equivalent (Simplistic: Matches source symbols or hypothesis if symbols overlap)
-        // Strict logic: Phase H MemoryKey matching is best, but here we check Active Intents.
-        // For MVP Phase I, we check if any existing intent shares source_symbol_ids (unlikely if new symbols)
-        // OR if the hypothesis matches and we are in a conversational flow.
-        // Better: Always create new if we came from Stable, UNLESS we can explicitly link (Phase I Scope).
-        // Actually, if we just registered a stable intent, it becomes Active.
-        // If there was another Active intent, handle_interruption/swap handles it?
-        // Rule: New Stable supersedes Active.
+        // Check if we have an existing intent with same ID
+        // Or if this is a "Reinforcement"
         
-        // Disable existing Active
-        for intent in state.active_intents.values() {
-            if intent.status == IntentStatus::Active {
-                // Suspend conflicting active
-                // For now, assume single-focus flow -> Suspend all others
-                let mut suspended = intent.clone();
-                suspended.status = IntentStatus::Suspended;
-                suspended.suspended_at = Some(current_tick);
-                deltas.push(StateDelta::LongHorizonIntentUpdate(suspended));
-            }
+        let mut existing_found = false;
+        
+        // MVP: If ID matches, Reinforce. Else Create.
+        if let Some(existing) = self.active_intents.get_mut(&candidate.id) {
+            existing_found = true;
+            existing.last_active_at = current_tick;
+            existing.decay_score = 1.0; // Refresh
+            existing.status = IntentStatus::Active;
+            existing.last_updated_at = current_tick;
+            
+            deltas.push(StateDelta::LongHorizonIntentUpdate(existing.clone()));
+            
+            // TELEMETRY: Reinforced (Active -> Active) - Optional? 
+            // IntentLifecycle tracks status changes.
+            // Active -> Active is not a status change.
         }
-
-        // Create New
-        let id = Uuid::new_v4().to_string();
-        let new_intent = LongHorizonIntent {
-            id,
-            hypothesis: candidate.hypothesis.clone(),
-            source_symbol_ids: candidate.source_symbol_ids.clone(),
-            created_at: current_tick,
-            last_active_at: current_tick,
-            last_updated_at: current_tick,
-            suspended_at: None,
-            decay_score: 1.0, // Fresh
-            status: IntentStatus::Active,
-        };
-        deltas.push(StateDelta::LongHorizonIntentUpdate(new_intent));
-
+        
+        if !existing_found {
+             let new_intent = LongHorizonIntent {
+                id: candidate.id.clone(),
+                hypothesis: candidate.hypothesis.clone(),
+                source_symbol_ids: candidate.source_symbol_ids.clone(),
+                created_at: current_tick,
+                last_active_at: current_tick,
+                last_updated_at: current_tick,
+                suspended_at: None,
+                decay_score: 1.0, // Fresh
+                status: IntentStatus::Active,
+            };
+            self.active_intents.insert(new_intent.id.clone(), new_intent.clone());
+            deltas.push(StateDelta::LongHorizonIntentUpdate(new_intent.clone()));
+            
+            // TELEMETRY: Created
+            telemetry.record(TelemetryEvent::IntentLifecycle {
+                intent_id: new_intent.id,
+                from: IntentStatus::Invalidated, // Proxy for None
+                to: IntentStatus::Active,
+            });
+        }
+        
         deltas
     }
 
     /// Suspend an specific intent (safe).
-    pub fn suspend_intent(&self, id: &str, state: &SharedState, current_tick: Tick) -> Option<StateDelta> {
-        if let Some(intent) = state.active_intents.get(id) {
-            if intent.status == IntentStatus::Active {
-                let mut new_intent = intent.clone();
-                new_intent.status = IntentStatus::Suspended;
-                new_intent.suspended_at = Some(current_tick);
-                return Some(StateDelta::LongHorizonIntentUpdate(new_intent));
-            }
-        }
-        None
+    pub fn suspend_intent(&mut self, id: &IntentId, _state: &SharedState, current_tick: Tick, telemetry: &mut TelemetryRecorder) -> Option<StateDelta> {
+         if let Some(intent) = self.active_intents.get_mut(id) {
+             if intent.status == IntentStatus::Active {
+                 let old_status = intent.status.clone();
+                 intent.status = IntentStatus::Suspended;
+                 intent.suspended_at = Some(current_tick);
+                 intent.decay_score *= 0.8; // Immediate penalty for interruption
+                 intent.last_updated_at = current_tick;
+                 
+                 // TELEMETRY: Suspended
+                 telemetry.record(TelemetryEvent::IntentLifecycle {
+                    intent_id: id.clone(),
+                    from: old_status,
+                    to: IntentStatus::Suspended,
+                 });
+
+                 return Some(StateDelta::LongHorizonIntentUpdate(intent.clone()));
+             }
+         }
+         None
     }
 
     /// Suspend ALL active intents (Interruption Supremacy).
-    pub fn handle_interruption(&self, state: &SharedState, current_tick: Tick) -> Vec<StateDelta> {
-        let mut deltas = Vec::new();
-        for intent in state.active_intents.values() {
-            if intent.status == IntentStatus::Active {
-                let mut new_intent = intent.clone();
-                new_intent.status = IntentStatus::Suspended;
-                new_intent.suspended_at = Some(current_tick);
-                
-                // Immediate slight penalty on interruption?
-                // Plan said: "Suspended = interruption-caused". No forced decay reset, but standard decay continues.
-                deltas.push(StateDelta::LongHorizonIntentUpdate(new_intent));
-            }
-        }
-        deltas
+    pub fn handle_interruption(&mut self, state: &SharedState, current_tick: Tick, telemetry: &mut TelemetryRecorder) -> Vec<StateDelta> {
+         let mut deltas = Vec::new();
+         // Suspend ALL Active intents
+         // Need to collect IDs first to avoid borrow issues
+         let active_ids: Vec<String> = self.active_intents.values()
+             .filter(|i| i.status == IntentStatus::Active)
+             .map(|i| i.id.clone())
+             .collect();
+             
+         for id in active_ids {
+             if let Some(d) = self.suspend_intent(&id, state, current_tick, telemetry) {
+                 deltas.push(d);
+             }
+         }
+         
+         deltas
     }
 
     /// Attempt to Resume a Suspended intent based on context.
@@ -123,156 +147,134 @@ impl LongHorizonIntentManager {
     /// - Decay > RESUME_THRESHOLD
     /// - No conflicting Active intent
     /// - Context Match (Symbol Overlap OR Planner Request)
-    pub fn try_resume(&self, state: &SharedState, current_tick: Tick) -> Vec<StateDelta> {
+    pub fn try_resume(&mut self, state: &SharedState, current_tick: Tick, telemetry: &mut TelemetryRecorder) -> Vec<StateDelta> {
         let mut deltas = Vec::new();
         
-        // 1. Guard: If any Active intent exists, do NOT resume (unless we implement Merge later).
-        if state.active_intents.values().any(|i| i.status == IntentStatus::Active) {
-            return vec![];
-        }
-
-        // 2. Find Candidates
-        let mut candidates: Vec<&LongHorizonIntent> = state.active_intents.values()
-            .filter(|i| (i.status == IntentStatus::Suspended || i.status == IntentStatus::Dormant))
-            .filter(|i| i.decay_score > RESUME_THRESHOLD)
-            .collect();
-
-        // 3. Filter by Context Match
-        // Since we don't have new text input in this function (it's called every tick),
-        // we check if the CURRENT input (in State?) matches, OR if the Planner requested it.
-        // For Phase I, we simulate "Context Match" via "Recent Symbols" available in state?
-        // Actually, try_resume is usually called when we have NEW input that didn't trigger a new intent but might resume an old one.
-        // BUT, `register_intent` handles new Stable intents.
-        // `try_resume` handles cases like "Silence... then user clarifies".
-        // If user clarifies, we get a Stable intent (Classification).
-        // If user just says "Yes", we get a Stable intent.
-        // So `register_intent` logic actually handles most "Resume by content" cases if we implement matching there.
-        //
-        // However, `try_resume` in the Plan implies "Silent Resumption" without explicit new Intent formation? 
-        // OR Resumption triggered by "Related symbol appears".
-        // If a symbol appears, it goes through Arbitrator. 
-        // Arbitrator might yield "Fragment" or "Ambiguous". 
-        // If "Ambiguous", we might check if it matches a Suspended intent.
-        //
-        // PLAN UPDATE: try_resume should be capable of checking arbitrary signal context?
-        // Implementation Plan: "Resumption triggers: User continues speaking, Related symbol, Planner request".
-        // For Phase I MVP: We will implement `try_resume_with_input`?
-        // Or assumes `state` contains the necessary context.
-        // 
-        // Let's implement specific checking logic:
-        // For Phase I verification `test_silent_resumption`: "Inject related symbol later".
-        // The test will likely inject a symbol that DOES NOT form a new Stable Intent (or forms Weak one),
-        // but DOES match the source_id of the suspended intent.
-        //
-        // So we need to look at `state.intent_state`? 
-        // If `IntentState::Forming` has candidates that match suspended intent symbols?
-        //
-        // Let's iterate candidates and check overlap with `state.intent_state` (if Forming/Ambiguous).
+        // Look for "Forming" intents in current context
+        // If they match a Suspended/Dormant intent, Resume it.
         
-        let mut match_found = None;
-        
-        // Context 1: Current Forming Intent Candidate matches
-        if let crate::kernel::intent::types::IntentState::Forming(forming_cands) = &state.intent_state {
-             for susp in &candidates {
-                 // Check overlap
-                 for fc in forming_cands {
+        if let crate::kernel::intent::types::IntentState::Forming(candidates) = &state.intent_state {
+             // Check over candidates
+             for fc in candidates {
+                 // Check if any Suspended intent matches this candidate's Symbols or Semantics
+                 let mut match_found: Option<LongHorizonIntent> = None;
+                 
+                 for susp in self.active_intents.values() 
+                     .filter(|i| i.status == IntentStatus::Suspended || i.status == IntentStatus::Dormant )
+                 {
                      // Check symbol overlap
                      for s_id in &fc.source_symbol_ids {
                          if susp.source_symbol_ids.contains(s_id) {
-                             match_found = Some(*susp);
+                             match_found = Some(susp.clone()); // FIX: Use clone if copy not avail
                              break;
                          }
                      }
                      if match_found.is_some() { break; }
                  }
-                 if match_found.is_some() { break; }
+                 
+                 if let Some(mut resumed) = match_found {
+                      let old_status = resumed.status.clone();
+                      let dormant_duration = match resumed.suspended_at {
+                          Some(t) => current_tick.frame.saturating_sub(t.frame),
+                          None => 0,
+                      };
+
+                      resumed.status = IntentStatus::Active;
+                      resumed.suspended_at = None;
+                      resumed.last_active_at = current_tick;
+                      // Boost score slightly?
+                      resumed.decay_score = (resumed.decay_score + 0.1).min(1.0);
+                      resumed.last_updated_at = current_tick;
+                      
+                      deltas.push(StateDelta::LongHorizonIntentUpdate(resumed.clone()));
+                      
+                      // TELEMETRY: Resumption
+                      telemetry.record(TelemetryEvent::IntentLifecycle {
+                          intent_id: resumed.id.clone(),
+                          from: old_status,
+                          to: IntentStatus::Active,
+                      });
+                      telemetry.record(TelemetryEvent::IntentResumption {
+                          intent_id: resumed.id.clone(),
+                          dormant_ticks: dormant_duration,
+                      });
+                 }
              }
         }
         
-        // Context 2: Just implicit similarity (Verification Test might assume injection makes it match).
-        // If test injects symbol, it should show up in Forming potentially.
-        //
-        // Conflict Resolution Policy: Highest Score -> Recency
-        if match_found.is_none() {
-            candidates.sort_by(|a, b| {
-                b.decay_score.partial_cmp(&a.decay_score).unwrap()
-                 .then(b.last_active_at.frame.cmp(&a.last_active_at.frame))
-            });
-            // If explicit Planner request? (Not implemented yet in State)
-            // For now, if we sort by score, let's say we pick top if there is ANY signal?
-            // "Context shares at least one source_symbol_id"
-            // We need to access *active symbols* from Audio segments?
-            // `state.audio_segments` has segments.
-            // If recent segment matches intent source?
-            //
-            // Let's implement overlap check with `state.audio_segments` created recently?
-            // Filter segments created after suspended_at?
-            // If any segment ID matches intent source? No, new segments have new IDs.
-            //
-            // Phase I Requirement: "Related symbol appears".
-            // Implementation: We rely on `IntentState::Forming` carrying the symbol ID, 
-            // OR the Test will inject a symbol that the Arbitrator *associates*?
-            //
-            // Let's stick to: "If Forming Candidate SourceID == Suspended SourceID" (For test dummy reuse)
-            // Or "If Forming Candidate Hypothesis == Suspended Hypothesis"?
-            //
-            // For the Verification Test `test_silent_resumption`, we will reuse symbol ID for simplicity or match content.
-            // The code above (Context 1) checks `symbol_ids` overlap.
-        }
-
-        if let Some(to_resume) = match_found {
-             // RESUME
-             let mut resumed = to_resume.clone();
-             resumed.status = IntentStatus::Active;
-             resumed.last_active_at = current_tick;
-             // Boost score slightly?
-             resumed.decay_score = (resumed.decay_score + 0.1).min(1.0);
-             resumed.last_updated_at = current_tick;
-             
-             deltas.push(StateDelta::LongHorizonIntentUpdate(resumed));
-        }
-
         deltas
     }
 
     /// Apply Decay (Tick).
     /// Monotonic: score *= rate^delta
-    pub fn tick(&self, current_tick: Tick, state: &SharedState) -> Vec<StateDelta> {
+    pub fn tick(&mut self, current_tick: Tick, _state: &SharedState, telemetry: &mut TelemetryRecorder) -> Vec<StateDelta> {
         let mut deltas = Vec::new();
         
-        for intent in state.active_intents.values() {
-            if intent.status == IntentStatus::Completed || intent.status == IntentStatus::Invalidated {
-                continue;
-            }
+        // Apply Monotonic Decay
+        // If intent.decay_score < Threshold -> Invalidate
+        
+        // We iterate over mutable refs? No, shared state is passed as Ref.
+        // But active_intents is owned by self.
+        
+        let ids: Vec<String> = self.active_intents.keys().cloned().collect();
+        
+        for id in ids {
+            if let Some(intent) = self.active_intents.get_mut(&id) {
+                // Decay Logic
+                if intent.status == IntentStatus::Invalidated {
+                    continue;
+                }
 
-            // Delta from LAST UPDATE (Per-Intent)
-            let delta = current_tick.frame.saturating_sub(intent.last_updated_at.frame) as f32;
-            
-            // Check if we should apply decay this tick.
-            // "Active" intents decay? Yes, unless reinforced.
-            // "Suspended" intents decay? Yes.
-            
-            let mut new_intent = intent.clone();
-            if delta > 0.0 {
-                new_intent.decay_score *= DECAY_RATE_PER_TICK.powf(delta); // Apply delta-based decay
-                new_intent.last_updated_at = current_tick;
-            }
-            
-            // Thresholds
-            if new_intent.decay_score < INVALIDATION_THRESHOLD {
-                new_intent.status = IntentStatus::Invalidated;
-            } else if new_intent.decay_score < DORMANCY_THRESHOLD && new_intent.status != IntentStatus::Dormant && new_intent.status != IntentStatus::Suspended {
-                 // Transition Active -> Dormant?
-                 // Or Suspended -> Dormant?
-                 // If Active drops low, it becomes Dormant (fades out).
-                 new_intent.status = IntentStatus::Dormant;
-            } else if new_intent.decay_score < DORMANCY_THRESHOLD && new_intent.status == IntentStatus::Suspended {
-                 new_intent.status = IntentStatus::Dormant;
-            }
+                // Delta from LAST UPDATE (Per-Intent)
+                let delta = current_tick.frame.saturating_sub(intent.last_updated_at.frame) as f32;
+                
+                // Check if we should apply decay this tick.
+                // "Active" intents decay? Yes, unless reinforced.
+                // "Suspended" intents decay? Yes.
+                
+                let mut new_intent = intent.clone();
+                if delta > 0.0 {
+                    new_intent.decay_score *= DECAY_RATE_PER_TICK.powf(delta); // Apply delta-based decay
+                    new_intent.last_updated_at = current_tick;
+                }
+                
+                // Thresholds
+                let old_status = new_intent.status.clone();
+                let mut status_changed = false;
 
-            // Emit update if changed status or significantly decayed (opt: reduce spam)
-            if new_intent.status != intent.status || (intent.decay_score - new_intent.decay_score).abs() > 0.001 {
-                deltas.push(StateDelta::LongHorizonIntentUpdate(new_intent));
+                if new_intent.decay_score < INVALIDATION_THRESHOLD {
+                    new_intent.status = IntentStatus::Invalidated;
+                    status_changed = true;
+                } else if new_intent.decay_score < DORMANCY_THRESHOLD && new_intent.status == IntentStatus::Suspended {
+                     // Suspended -> Dormant
+                     new_intent.status = IntentStatus::Dormant;
+                     status_changed = true;
+                } else if new_intent.decay_score < DORMANCY_THRESHOLD && new_intent.status == IntentStatus::Active {
+                     // Weak Active -> Dormant? Maybe? Or just Invalid logic.
+                     // Active intents are usually reinforced by planner. If ignored, they fade.
+                     new_intent.status = IntentStatus::Dormant;
+                     status_changed = true;
+                }
+                
+                if status_changed {
+                    telemetry.record(TelemetryEvent::IntentLifecycle {
+                        intent_id: new_intent.id.clone(),
+                        from: old_status,
+                        to: new_intent.status.clone(),
+                    });
+                }
+
+                // Only emit if changed significantly? 
+                // Or every tick? Every tick is too much traffic.
+                // Emission: Only on status change or significant decay steps?
+                // SharedState needs it to display? 
+                // We return delta. SharedState applies it.
+                // Optimization: Only return delta if diff > epsilon or status change.
+                
+                if (new_intent.decay_score - intent.decay_score).abs() > 0.001 || new_intent.status != intent.status {
+                     *intent = new_intent.clone();
+                     deltas.push(StateDelta::LongHorizonIntentUpdate(new_intent));
+                }
             }
         }
         

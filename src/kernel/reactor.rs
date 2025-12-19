@@ -23,6 +23,15 @@ use crate::memory::{
 use crate::kernel::memory::consolidator::MemoryConsolidator;
 use crate::monitor::monitor::SelfObservationMonitor; // Monitor
 use crate::kernel::intent::long_horizon::LongHorizonIntentManager;
+use crate::kernel::telemetry::recorder::TelemetryRecorder;
+use crate::kernel::telemetry::event::{TelemetryEvent, OutputEventKind, InterruptionSource};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KernelMode {
+    Onboarding,
+    Active,
+}
+
 
 pub struct Reactor {
     pub receiver: mpsc::Receiver<Event>,
@@ -53,6 +62,12 @@ pub struct Reactor {
 
     // Phase G: Intent Arbitrator
     pub arbitrator: crate::kernel::intent::arbitrator::IntentArbitrator,
+    
+    // Phase J: Telemetry
+    pub telemetry: TelemetryRecorder,
+    
+    // Phase K: Onboarding Lock
+    pub mode: KernelMode,
 }
 
 impl Reactor {
@@ -84,7 +99,15 @@ impl Reactor {
             audio_monitor: crate::kernel::audio::monitor::AudioMonitor::new(48000),
             lhim: LongHorizonIntentManager::new(),
             arbitrator: crate::kernel::intent::arbitrator::IntentArbitrator::new(),
+            telemetry: TelemetryRecorder::new(),
+            mode: KernelMode::Active, // Default to Active (Safe for Tests), Driver will override if needed.
         }
+    }
+
+    /// Set the kernel mode (Encapsulated)
+    pub fn set_mode(&mut self, mode: KernelMode) {
+        info!("Kernel Mode changed to: {:?}", mode);
+        self.mode = mode;
     }
 
     /// Pure Tick Step: Advances State. Returns SideEffects to be executed by the driver.
@@ -94,6 +117,9 @@ impl Reactor {
     /// All reductions and planning occur in the context of the *new* tick.
     pub fn tick_step(&mut self, events: Vec<Event>) -> Vec<SideEffect> {
         self.tick = self.tick.next();
+        let _frame_start = self.tick.frame;
+        let old_presence = self.state.presence; // Capture old presence for transition check
+        
         self.state.reduce(StateDelta::Tick(self.tick)); // Sync Time
         let mut effects = Vec::new();
 
@@ -104,6 +130,15 @@ impl Reactor {
         for event in events {
             match event {
                 Event::Input(inp) => {
+                     // Phase K Invariant: While in Onboarding, ALL user input is ignored.
+                     // This is intentional and must not be relaxed.
+                     if self.mode == KernelMode::Onboarding {
+                         // We drop the input entirely.
+                         // Do we log it? Maybe trace.
+                         // tracing::trace!("Input dropped due to Onboarding Mode");
+                         continue;
+                     }
+
                      // 0. Pre-Process: Lifecycle Updates (AudioStatus)
                      if let super::event::InputContent::AudioStatus(ref status) = inp.content {
                           match status {
@@ -249,14 +284,14 @@ impl Reactor {
                               // Phase H: Memory Ingest (Edge Triggered)
                               if let crate::kernel::intent::types::IntentState::Stable(cand) = &new_intent_state {
                                   // Memory
-                                  let memory_deltas = self.consolidator.process_intent(cand, &self.state);
+                                  let memory_deltas = self.consolidator.process_intent(cand, &self.state, &mut self.telemetry);
                                   for d in memory_deltas {
                                       self.state.reduce(d);
                                   }
                                   
                                   // Phase I: Long-Horizon Intent Registration
                                   // This is the primary entry point for Intent Creation
-                                  let intent_deltas = self.lhim.register_intent(cand, &self.state, self.tick);
+                                  let intent_deltas = self.lhim.register_intent(cand, &self.state, self.tick, &mut self.telemetry);
                                   for d in intent_deltas {
                                       self.state.reduce(d);
                                   }
@@ -308,6 +343,24 @@ impl Reactor {
             monitor_obs.extend(user_obs);
         }
 
+        // TELEMETRY: Check Presence Transition
+        if self.state.presence != old_presence {
+            self.telemetry.record(TelemetryEvent::PresenceTransition {
+                from: old_presence,
+                to: self.state.presence,
+                tick: self.tick,
+            });
+        }
+        
+        // TELEMETRY: Silence Tracking
+        // Definition: No user speech, no system speech.
+        // We check state flags.
+        // AudioMonitor tracks system_speaking.
+        // SharedState tracks user_speaking.
+        if !self.state.user_speaking && !self.audio_monitor.is_system_speaking() {
+             self.telemetry.record(TelemetryEvent::SilencePeriod { duration_ticks: 1 });
+        }
+
         // === 2. CANCEL (Pure Decision) ===
         let cancel_deltas = self.cancel_registry.process(&inputs);
         let has_cancellation = !cancel_deltas.is_empty();
@@ -318,7 +371,27 @@ impl Reactor {
 
         // === 3. REDUCE (Causality) ===
         for delta in cancel_deltas {
+            // TELEMETRY: Output Cancellation
+            if let StateDelta::OutputCanceled(id) = &delta {
+                // Find proposed output to measure latency?
+                // Or just record event.
+                // We record explicit cancel event.
+                self.telemetry.record(TelemetryEvent::OutputLifecycle {
+                    output_id: *id,
+                    event: OutputEventKind::Cancelled,
+                    latency_ticks: 0, // Instantaneous
+                });
+            }
             self.state.reduce(delta);
+        }
+        
+        // TELEMETRY: Interruption
+        if has_cancellation {
+            // Latency = 0 (Same tick processing)
+             self.telemetry.record(TelemetryEvent::Interruption {
+                source: InterruptionSource::ExplicitCancel, // Default/Inferred
+                cancel_latency_ticks: 0,
+            });
         }
         
         // === PART IX: LONG-HORIZON INTENT (INTERRUPTION SUPREMACY & LIFECYCLE) ===
@@ -338,14 +411,14 @@ impl Reactor {
         }
 
         if interruption_detected {
-            let intent_deltas = self.lhim.handle_interruption(&self.state, self.tick);
+            let intent_deltas = self.lhim.handle_interruption(&self.state, self.tick, &mut self.telemetry);
             for d in intent_deltas {
                 self.state.reduce(d);
             }
         }
 
         // 2. Apply Decay (Time-based monoticity)
-        let decay_deltas = self.lhim.tick(self.tick, &self.state);
+        let decay_deltas = self.lhim.tick(self.tick, &self.state, &mut self.telemetry);
         for d in decay_deltas {
             self.state.reduce(d);
         }
@@ -353,7 +426,7 @@ impl Reactor {
         // 3. Attempt Resumption (Silent Context Match)
         // Only if we are NOT currently interrupted/inputting
         if inputs.is_empty() && !interruption_detected {
-             let resume_deltas = self.lhim.try_resume(&self.state, self.tick);
+             let resume_deltas = self.lhim.try_resume(&self.state, self.tick, &mut self.telemetry);
              for d in resume_deltas {
                  self.state.reduce(d);
              }
@@ -505,8 +578,22 @@ impl Reactor {
                              parent_id: None,
                          };
 
-                         let delta = StateDelta::OutputProposed(output_obj.clone());
-                         self.state.reduce(delta);
+                          let delta = StateDelta::OutputProposed(output_obj.clone());
+                          self.state.reduce(delta);
+                          
+                          // TELEMETRY: Output Draft Started (Hard Commit really, since we just crystallized)
+                          // Wait, OutputProposed -> DraftStarted? 
+                          // Or HardCommit? The status is in output_obj.
+                          let kind = match output_obj.status {
+                              crate::kernel::event::OutputStatus::HardCommit => OutputEventKind::HardCommit,
+                              _ => OutputEventKind::SoftCommit,
+                          };
+                          
+                          self.telemetry.record(TelemetryEvent::OutputLifecycle {
+                              output_id,
+                              event: kind,
+                              latency_ticks: 0, 
+                          });
                          
                          let effect = SideEffect::SpawnAudio(output_id, text.clone()); 
                          effects.push(effect);
@@ -548,7 +635,7 @@ impl Reactor {
         }
 
         // === PHASE H: MEMORY TICK ===
-        let mem_tick_deltas = self.consolidator.tick(self.tick, &self.state);
+        let mem_tick_deltas = self.consolidator.tick(self.tick, &self.state, &mut self.telemetry);
         for d in mem_tick_deltas {
             self.state.reduce(d);
         }

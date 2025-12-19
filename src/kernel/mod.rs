@@ -10,3 +10,4 @@ pub mod presence;
 pub mod audio;
 pub mod intent;
 pub mod memory;
+pub mod telemetry;

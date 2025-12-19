@@ -3,7 +3,8 @@ use crate::kernel::intent::types::{IntentCandidate, IntentStability};
 use crate::kernel::memory::types::{MemoryCandidate, MemoryKey, MemoryRecord};
 use crate::kernel::time::Tick;
 use uuid::Uuid;
-
+use crate::kernel::telemetry::recorder::TelemetryRecorder;
+use crate::kernel::telemetry::event::{TelemetryEvent, MemoryEventKind};
 // Assuming 50ms per tick
 // Minimum window: 1 minute = 60s = 1200 ticks
 const MIN_CONSOLIDATION_WINDOW: u64 = 1200; 
@@ -23,7 +24,7 @@ impl MemoryConsolidator {
     }
 
     /// Process a Stable Intent to potentially create or reinforce a Memory Candidate.
-    pub fn process_intent(&self, intent: &IntentCandidate, state: &SharedState) -> Vec<StateDelta> {
+    pub fn process_intent(&self, intent: &IntentCandidate, state: &SharedState, telemetry: &mut TelemetryRecorder) -> Vec<StateDelta> {
         // 1. Gate: Must be Stable and High Confidence
         if intent.stability != IntentStability::Stable || intent.confidence < 0.85 {
             return vec![];
@@ -40,11 +41,16 @@ impl MemoryConsolidator {
         if let Some(cand) = existing {
             // Reinforce
             deltas.push(StateDelta::MemoryCandidateReinforced(cand.id.clone(), current_tick));
+            // TELEMETRY
+            telemetry.record(TelemetryEvent::MemoryEvent {
+                kind: MemoryEventKind::Reinforced,
+                memory_id: cand.id.clone(),
+            });
         } else {
             // New Candidate
             let id = Uuid::new_v4().to_string();
             let new_cand = MemoryCandidate {
-                id,
+                id: id.clone(),
                 key,
                 intent: intent.clone(),
                 created_at: current_tick,
@@ -52,13 +58,19 @@ impl MemoryConsolidator {
                 last_reinforced_at: current_tick,
             };
             deltas.push(StateDelta::MemoryCandidateCreated(new_cand));
+            
+            // TELEMETRY
+            telemetry.record(TelemetryEvent::MemoryEvent {
+                kind: MemoryEventKind::CandidateCreated,
+                memory_id: id,
+            });
         }
 
         deltas
     }
 
     /// Run periodic maintenance: Promotion, Decay, Pruning.
-    pub fn tick(&self, current_tick: Tick, state: &SharedState) -> Vec<StateDelta> {
+    pub fn tick(&self, current_tick: Tick, state: &SharedState, telemetry: &mut TelemetryRecorder) -> Vec<StateDelta> {
         let mut deltas = Vec::new();
 
         // 1. Decay Long Term Memory
@@ -76,11 +88,26 @@ impl MemoryConsolidator {
                 let new_strength = record.strength * DECAY_FACTOR;
                 if new_strength < FORGET_THRESHOLD {
                     deltas.push(StateDelta::MemoryForgotten(record.id.clone()));
+                    telemetry.record(TelemetryEvent::MemoryEvent { 
+                        kind: MemoryEventKind::Forgotten, 
+                        memory_id: record.id.clone() 
+                    });
                 } else {
                     deltas.push(StateDelta::MemoryDecayed { 
                         id: record.id.clone(), 
                         new_strength 
                     });
+                    // Optional: Don't log decay every tick, only significant ones?
+                    // Or "Decayed" event is for significant drops?
+                    // For now, let's NOT log MemoryDecayed every tick as it's high volume.
+                    // User Plan: "Decay too aggressive" can be seen via Forgotten count or Intent stats.
+                    // But Plan says "MemoryStats { decayed: u64 }".
+                    // If we increment this every tick for every record, it will explode.
+                    // Maybe only log if it drops below a tier (0.5, 0.2)?
+                    // Or let's just log Forgotten for now to be safe on volume.
+                    // Actually, let's log "Decayed" only if strength crosses 0.5 boundary downwards?
+                    // Too complex. Let's just log Forgotten.
+                    // The metrics struct has "decayed: u64". maybe we skip using it heavily.
                 }
             }
         }
@@ -102,6 +129,11 @@ impl MemoryConsolidator {
                 };
                 deltas.push(StateDelta::MemoryPromoted(record));
                 deltas.push(StateDelta::MemoryCandidateRemoved(cand.id.clone())); // Remove from candidates STARTS HERE
+                
+                telemetry.record(TelemetryEvent::MemoryEvent {
+                    kind: MemoryEventKind::Promoted,
+                    memory_id: cand.id.clone(),
+                });
             }
             
             // Check Pruning
@@ -109,6 +141,8 @@ impl MemoryConsolidator {
             let idle_time = current_tick.frame.saturating_sub(cand.last_reinforced_at.frame);
             if idle_time > MAX_CANDIDATE_AGE {
                 deltas.push(StateDelta::MemoryCandidateRemoved(cand.id.clone()));
+                // Telemetry: Pruned? We don't have Pruned in EventKind.
+                // Maybe "Forgotten"?
             }
         }
 

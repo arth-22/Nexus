@@ -12,7 +12,89 @@ const dom = {
     canvas: document.getElementById('canvas'),
     input: document.getElementById('ambient-input'),
     mic: document.getElementById('mic-toggle'),
-    indicator: document.getElementById('presence-label')
+    indicator: document.getElementById('presence-label'),
+    // Cache onboarding elements directly
+    onboardingOverlay: document.getElementById('onboarding-overlay'),
+};
+// Helper vars to avoid 'dom' scoping issues if any
+const onboardingText = document.getElementById('onboarding-text');
+const onboardingButton = document.getElementById('onboarding-continue');
+
+// --- Phase K: Onboarding Content ---
+const ONBOARDING_SCREENS = [
+    `Nexus is a system that listens to unfinished thought.
+
+You don't need to address it directly.
+You don't need to finish sentences.
+
+Sometimes it will respond.
+Sometimes it will wait.`,
+
+    `Silence is not an error.
+
+Nexus may wait because it is uncertain,
+or because it thinks waiting is better than guessing.
+
+You don't need to fill the silence.`,
+
+    `You can interrupt Nexus at any time.
+
+Speaking will immediately stop it.
+
+You don't need to say "stop."`,
+
+    `Nexus forgets by default.
+
+It may remember patterns over time,
+but it will ask before keeping anything important.
+
+It can correct itself.`
+];
+
+const OnboardingManager = {
+    currentScreen: 0,
+
+    async check() {
+        const completed = await invoke('get_onboarding_status');
+        return completed;
+    },
+
+    start() {
+        console.log('[Onboarding] Starting');
+        this.currentScreen = 0;
+        dom.onboardingOverlay.style.display = 'flex';
+        this.render();
+    },
+
+    render() {
+        console.log(`[Onboarding] Rendering screen ${this.currentScreen}`);
+        onboardingText.textContent = ONBOARDING_SCREENS[this.currentScreen];
+        // Final screen has "Begin" button
+        if (this.currentScreen === ONBOARDING_SCREENS.length - 1) {
+            onboardingButton.innerText = 'Begin';
+        } else {
+            onboardingButton.innerText = 'Continue';
+        }
+    },
+
+    next() {
+        console.log('[Onboarding] Next called');
+        this.currentScreen++;
+        if (this.currentScreen >= ONBOARDING_SCREENS.length) {
+            this.finish();
+        } else {
+            this.render();
+        }
+    },
+
+    async finish() {
+        // Call Driver to persist and unlock kernel
+        await invoke('complete_onboarding');
+        dom.onboardingOverlay.style.display = 'none';
+        // Now trigger normal UI attach
+        invoke('ui_attach');
+        dom.mic.click(); // Default mic ON
+    }
 };
 
 // --- 1. Event Stream (Core -> UI) ---
@@ -156,7 +238,7 @@ dom.mic.addEventListener('click', () => {
 });
 
 // --- 6. Initialization ---
-window.addEventListener('DOMContentLoaded', () => {
+window.addEventListener('DOMContentLoaded', async () => {
     // Ensure input has focus for ambient capture
     dom.input.focus();
     dom.input.addEventListener('blur', () => {
@@ -164,9 +246,22 @@ window.addEventListener('DOMContentLoaded', () => {
         // "Non-demanding" -> Let it go.
     });
 
-    // Signal Ready -> Triggers Core to push Context
-    invoke('ui_attach');
+    // Phase K: Check Onboarding Status
+    const onboardingComplete = await OnboardingManager.check();
+    console.log('[Init] Onboarding Complete:', onboardingComplete);
 
-    // Default Mic to ON for Phase D testing
-    dom.mic.click();
+    if (!onboardingComplete) {
+        OnboardingManager.start();
+        // Wire button with safety
+        onboardingButton.addEventListener('click', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            OnboardingManager.next();
+        });
+    } else {
+        // Signal Ready -> Triggers Core to push Context
+        invoke('ui_attach');
+        // Default Mic to ON for Phase D testing
+        dom.mic.click();
+    }
 });

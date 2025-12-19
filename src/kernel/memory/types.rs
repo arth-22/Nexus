@@ -1,8 +1,7 @@
 use crate::kernel::intent::types::{IntentCandidate, IntentHypothesis};
 use crate::kernel::time::Tick;
 use serde::{Serialize, Deserialize};
-use std::hash::{Hash, Hasher};
-use std::collections::hash_map::DefaultHasher;
+use std::hash::Hash;
 
 pub type MemoryId = String;
 
