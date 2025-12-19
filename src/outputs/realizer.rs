@@ -11,7 +11,8 @@ pub fn realize(snapshot: &SymbolicSnapshot, decision: &CrystallizationDecision) 
         .join(" ");
         
     if content.is_empty() {
-        return "...".to_string(); // Silence?
+        // Phase D Verification: Default speech
+        return "This is a long verification message to test the interruptibility of the Nexus system. Please speak now to test the kill switch.".to_string(); 
     }
     
     match decision {

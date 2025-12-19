@@ -38,6 +38,7 @@ pub enum PresenceRequest {
     UserSuspend,
     UserResume,
     Timeout,
+    AudioActivity,
 }
 
 /// The state machine that governs presence transitions.
@@ -59,6 +60,7 @@ impl PresenceGraph {
             // --- From Attentive ---
             (Attentive, WakeWordDetected) => Some(Engaged),
             (Attentive, InputActivity) => Some(Engaged), // Any typing/speech wakes it
+            (Attentive, AudioActivity) => Some(Engaged),
             (Attentive, UserSuspend) => Some(Suspended),
             // Timeout in Attentive -> Dormant (Energy saving?) - Optional, let's keep it simple.
 
@@ -71,6 +73,7 @@ impl PresenceGraph {
 
             // --- From QuietlyHolding ---
             (QuietlyHolding, InputActivity) => Some(Engaged), // Wakes up with context
+            (QuietlyHolding, AudioActivity) => Some(Engaged),
             (QuietlyHolding, IntentResolved) => Some(Attentive), // Done holding
             (QuietlyHolding, UserSuspend) => Some(Suspended),
 

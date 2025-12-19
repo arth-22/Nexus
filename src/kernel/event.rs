@@ -30,6 +30,12 @@ pub enum VisualSignal {
     },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AudioStatus {
+    PlaybackStarted,
+    PlaybackEnded, // Normalized: Finished OR Cancelled
+}
+
 #[derive(Debug, Clone)]
 pub struct InputEvent {
     pub source: String,
@@ -40,7 +46,17 @@ pub struct InputEvent {
 pub enum InputContent {
     Text(String),
     Audio(AudioSignal),
+    AudioChunk(Vec<f32>), // Raw audio frames from shell
     Visual(VisualSignal),
+    ProvisionalText {
+        content: String,
+        confidence: f32,
+        source_id: String, // SegmentId
+    },
+    TranscriptionRequest {
+        segment_id: String, // Explicit gating trigger
+    },
+    AudioStatus(AudioStatus),
 }
 
 // Helper for legacy text compatibility

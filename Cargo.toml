@@ -22,3 +22,4 @@ image = "0.23.14"
 img_hash = "3.2"
 xcap = "0.0.9"
 uuid = { version = "1.19.0", features = ["v4", "fast-rng", "macro-diagnostics", "serde"] }
+hound = "3.5"

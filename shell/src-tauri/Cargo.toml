@@ -9,10 +9,14 @@ edition = "2021"
 tauri-build = { version = "2.0", features = [] }
 
 [dependencies]
-tauri = { version = "2.0", features = ["macos-private-api"] }
+tauri = { version = "2.0", features = [] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tokio = { version = "1", features = ["full"] }
+cpal = "0.15"
+tracing = "0.1"
+tracing-subscriber = "0.3" 
+log = "0.4"
 
 # Link to the local Nexus Core library
 nexus = { path = "../../" }

@@ -3,6 +3,8 @@ use super::presence::{PresenceState, PresenceRequest, PresenceGraph};
 use std::collections::{HashMap, HashSet};
 use crate::kernel::time::Tick;
 use crate::intent::{LongHorizonIntent, IntentId};
+use crate::kernel::audio::segment::{AudioSegment, SegmentStatus};
+use crate::kernel::intent::types::IntentState;
 
 #[derive(Debug, Clone)]
 pub struct MetaLatents {
@@ -41,6 +43,15 @@ pub enum StateDelta {
     MetaLatentUpdate { delta: MetaLatents }, 
     IntentUpdate { intent: LongHorizonIntent },
     PresenceTransition(PresenceRequest),
+    PresenceUpdate(PresenceState),
+    // Audio Buffering Deltas
+    AudioSegmentCreated(AudioSegment),
+    AudioFrameAppended { segment_id: String, frames: Vec<f32> },
+    AudioSegmentFinalized { segment_id: String, end_tick: Tick },
+    AudioSegmentTranscribing(String),
+    AudioSegmentTranscribed { segment_id: String, text: String },
+    /// Phase G: Intent Assessment
+    AssessmentUpdate(IntentState),
     Tick(Tick),
 }
 
@@ -91,7 +102,16 @@ pub struct SharedState {
     pub active_intents: HashMap<IntentId, LongHorizonIntent>,
 
     // Phase B: Presence State (Authoritative)
+    // Phase B: Presence State (Authoritative)
     pub presence: PresenceState,
+
+    // Phase E: Audio Storage (Cognition)
+    // Phase E: Audio Storage (Cognition)
+    pub audio_segments: HashMap<String, AudioSegment>,
+    pub active_segment_id: Option<String>,
+
+    // Phase G: Intent Arbitration
+    pub intent_state: IntentState,
 }
 
 impl Default for SharedState {
@@ -112,6 +132,9 @@ impl Default for SharedState {
             meta_latents: MetaLatents::default(),
             active_intents: HashMap::new(),
             presence: PresenceState::default(),
+            audio_segments: HashMap::new(),
+            active_segment_id: None,
+            intent_state: IntentState::default(),
         }
     }
 }
@@ -261,6 +284,41 @@ impl SharedState {
                     self.presence = new_state;
                 }
                 // If None, the transition was rejected by the Core (Authority).
+            }
+            StateDelta::PresenceUpdate(new_state) => {
+                self.presence = new_state;
+            }
+            StateDelta::AudioSegmentCreated(seg) => {
+                self.active_segment_id = Some(seg.id.clone());
+                self.audio_segments.insert(seg.id.clone(), seg);
+            }
+            StateDelta::AudioFrameAppended { segment_id, frames } => {
+                if let Some(seg) = self.audio_segments.get_mut(&segment_id) {
+                    seg.frames.extend(frames);
+                }
+            }
+            StateDelta::AudioSegmentFinalized { segment_id, end_tick } => {
+                if let Some(seg) = self.audio_segments.get_mut(&segment_id) {
+                    seg.end_tick = Some(end_tick);
+                    seg.status = SegmentStatus::Pending;
+                }
+                if self.active_segment_id.as_ref() == Some(&segment_id) {
+                    self.active_segment_id = None;
+                }
+            }
+            StateDelta::AudioSegmentTranscribing(segment_id) => {
+                if let Some(seg) = self.audio_segments.get_mut(&segment_id) {
+                    seg.status = SegmentStatus::Transcribing;
+                }
+            }
+            StateDelta::AudioSegmentTranscribed { segment_id, text } => {
+                if let Some(seg) = self.audio_segments.get_mut(&segment_id) {
+                    seg.status = SegmentStatus::Transcribed;
+                    seg.transcription = Some(text);
+                }
+            }
+            StateDelta::AssessmentUpdate(new_state) => {
+                self.intent_state = new_state;
             }
         }
     }

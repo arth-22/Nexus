@@ -4,7 +4,7 @@
 // 2. UI has no memory (No local persistence).
 // 3. UI tolerates silence (No waiting animations).
 
-const { invoke } = window.__TAURI__.tauri;
+const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
 
 const dom = {
@@ -12,7 +12,7 @@ const dom = {
     canvas: document.getElementById('canvas'),
     input: document.getElementById('ambient-input'),
     mic: document.getElementById('mic-toggle'),
-    indicator: document.getElementById('presence-dot')
+    indicator: document.getElementById('presence-label')
 };
 
 // --- 1. Event Stream (Core -> UI) ---
@@ -42,15 +42,34 @@ function updatePresence(state) {
     // RESET existing classes to ensure clean transition
     dom.body.className = '';
 
-    // Map to CSS classes defined in style.css
-    // Logic: The CSS handles the transition. We just set the truth.
+    // Set Text Content based on State
+    // User Rule: "Make it textual, not symbolic. Or almost invisible."
+    let text = "";
     switch (state) {
-        case 'Dormant': dom.body.classList.add('state-dormant'); break;
-        case 'Attentive': dom.body.classList.add('state-attentive'); break;
-        case 'Engaged': dom.body.classList.add('state-engaged'); break;
-        case 'QuietlyHolding': dom.body.classList.add('state-holding'); break;
-        case 'Suspended': dom.body.classList.add('state-suspended'); break;
+        case 'Dormant':
+            text = "";
+            dom.body.classList.add('state-dormant');
+            break;
+        case 'Attentive':
+            text = "Listening";
+            dom.body.classList.add('state-attentive');
+            break;
+        case 'Engaged':
+            text = "Active";
+            dom.body.classList.add('state-engaged');
+            break;
+        case 'QuietlyHolding':
+            text = "Holding";
+            dom.body.classList.add('state-holding');
+            break;
+        case 'Suspended':
+            text = "Paused";
+            dom.body.classList.add('state-suspended');
+            break;
+        default:
+            text = "";
     }
+    dom.indicator.textContent = text;
 }
 
 // --- 3. Output Rendering (The Canvas) ---
@@ -147,4 +166,7 @@ window.addEventListener('DOMContentLoaded', () => {
 
     // Signal Ready -> Triggers Core to push Context
     invoke('ui_attach');
+
+    // Default Mic to ON for Phase D testing
+    dom.mic.click();
 });

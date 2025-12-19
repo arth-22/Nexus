@@ -1,19 +1,26 @@
 /* Phase C: The Quiet Thinking Canvas */
 
 :root {
-    --bg-color: transparent; /* Transparent window */
+    --bg-color: #1e1e1e;
+    /* Opaque Neutral Dark */
     --text-primary: #eee;
     --text-muted: #888;
     --text-draft: #aaa;
-    --indicator-dormant: #333;
-    --indicator-attentive: #666; /* Subtle "listening" cues */
+    --indicator-dormant: #444;
+    /* Slightly lighter on dark bg */
+    --indicator-attentive: #777;
     --indicator-engaged: #ccc;
-    --indicator-holding: #555;
+    --indicator-holding: #666;
     --font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
 }
 
 body {
     background-color: var(--bg-color);
+    /* Subtle grounding texture: faint noise or very subtle grid */
+    background-image:
+        linear-gradient(rgba(255, 255, 255, 0.03) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(255, 255, 255, 0.03) 1px, transparent 1px);
+    background-size: 20px 20px;
     color: var(--text-primary);
     font-family: var(--font-family);
     margin: 0;
@@ -23,11 +30,11 @@ body {
     display: flex;
     flex-direction: column;
     overflow: hidden;
-    user-select: none;
+    user-select: text;
     cursor: default;
 }
 
-/* --- Region 1: Presence Indicator (Top) --- */
+/* --- Region 1: Presence Indicator (Textual) --- */
 #presence-header {
     height: 20px;
     display: flex;
@@ -36,21 +43,37 @@ body {
     flex-shrink: 0;
 }
 
-#presence-dot {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background-color: var(--indicator-dormant);
-    transition: background-color 0.3s ease; /* State driven only */
-    /* NO ANIMATION LOOPS ALLOWED */
+#presence-label {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--indicator-dormant);
+    transition: color 0.3s ease;
+    font-weight: 500;
 }
 
 /* Strict State Mapping */
-.state-dormant #presence-dot { background-color: var(--indicator-dormant); }
-.state-attentive #presence-dot { background-color: var(--indicator-attentive); }
-.state-engaged #presence-dot { background-color: var(--indicator-engaged); }
-.state-holding #presence-dot { background-color: var(--indicator-holding); }
-.state-suspended #presence-dot { opacity: 0.3; }
+.state-dormant #presence-label {
+    color: var(--indicator-dormant);
+    /* Nearly invisible */
+    opacity: 0.5;
+}
+
+.state-attentive #presence-label {
+    color: var(--indicator-attentive);
+}
+
+.state-engaged #presence-label {
+    color: var(--indicator-engaged);
+}
+
+.state-holding #presence-label {
+    color: var(--indicator-holding);
+}
+
+.state-suspended #presence-label {
+    opacity: 0.3;
+}
 
 /* --- Region 2: The Thinking Canvas (Main) --- */
 #canvas {
@@ -58,45 +81,35 @@ body {
     overflow-y: auto;
     display: flex;
     flex-direction: column;
-    justify-content: flex-end; /* Text flows from bottom like a log/terminal, or top?
-                                Phase C says "flows chronologically". 
-                                Usually implies top-down or bottom-up depending on "last item visible".
-                                Let's stick to standard flow. */
+    justify-content: flex-end;
     gap: 8px;
     padding-bottom: 10px;
-    scrollbar-width: none; /* Hide scrollbar for clean look */
+    scrollbar-width: none;
 }
 
 #canvas::-webkit-scrollbar {
     display: none;
 }
 
-/* Text Fragments - NO BUBBLES */
+/* Text Fragments */
 .fragment {
-    max-width: 100%; /* Full width, no bubbles */
+    max-width: 100%;
     line-height: 1.5;
     font-size: 14px;
 }
 
-/* Committed Output (Hard/Soft) */
 .fragment.committed {
     color: var(--text-primary);
-    /* "Committed blocks must never be re-measured or reflowed" - managed by JS appending */
 }
 
-/* Draft Output (Provisional) */
 .fragment.draft {
     color: var(--text-draft);
     font-style: italic;
     opacity: 0.8;
 }
 
-/* User Input (Ambient) */
 .fragment.user-input {
     color: var(--text-muted);
-    /* Differentiate slightly by alignment or just color? 
-       "Text flows chronologically, not turn-based."
-       Let's keep it left-aligned but muted to distinguish source subtly. */
 }
 
 /* --- Region 3: Input Affordances (Bottom) --- */
@@ -118,29 +131,35 @@ body {
     flex-grow: 1;
     background: transparent;
     border: none;
-    color: transparent; /* Text rendered in canvas, not here */
-    caret-color: var(--text-primary); /* Only caret visible? Or hidden too if we render draft? */
-    /* "Typing appears immediately" -> implies we render it in canvas. 
-       So input is truly invisible capture. */
+    color: transparent;
+    caret-color: var(--text-primary);
     resize: none;
     height: 20px;
     font-family: inherit;
     font-size: 14px;
     outline: none;
-    caret-color: transparent; /* We render our own cursor if needed, or rely on Canvas Draft */
 }
 
-/* Mic Toggle */
+/* Mic Toggle (Textual) */
 #mic-toggle {
-    width: 16px;
-    height: 16px;
-    border: 1px solid var(--text-muted);
-    border-radius: 50%;
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    font-size: 12px;
+    text-transform: uppercase;
     cursor: pointer;
-    position: relative;
-    /* "No timers. No recording labels." */
+    padding: 2px 6px;
+    border: 1px solid transparent;
+    /* Reserve space */
+}
+
+#mic-toggle:hover {
+    color: var(--text-primary);
 }
 
 #mic-toggle.active {
-    background-color: var(--text-muted);
+    color: var(--text-primary);
+    font-weight: bold;
+    border: 1px solid var(--text-muted);
+    border-radius: 4px;
 }

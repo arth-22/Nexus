@@ -9,6 +9,8 @@ pub struct Scheduler;
 pub enum SideEffect {
     Log(String),
     SpawnAudio(OutputId, String),
+    StopAudio,
+    RequestTranscription { segment_id: String },
 }
 
 impl Scheduler {
@@ -48,8 +50,8 @@ impl Scheduler {
             }
             Intent::BeginResponse { confidence: _ } => {
                 // Phase 1 Stub: We don't generate text yet.
-                // Hardcode "Hello Phase 1" to pass verification.
-                let text = "Hello Phase 1".to_string();
+                // Longer text for Phase D Interruption Verification
+                let text = "This is a long verification message to test the interruptibility of the Nexus system. Please speak now to test the kill switch.".to_string();
                 
                 let output = Output {
                     id: output_id,

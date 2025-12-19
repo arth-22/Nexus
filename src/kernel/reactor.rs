@@ -12,6 +12,8 @@ use super::cancel::CancellationRegistry;
 // use crate::planner::stub::plan;
 
 use crate::planner::async_planner::AsyncPlanner;
+use uuid::Uuid;
+use super::audio::segment::AudioSegment;
 
 // Memory System
 use crate::memory::{
@@ -41,9 +43,15 @@ pub struct Reactor {
     
     // Self-Observation Monitor
     pub monitor: SelfObservationMonitor,
+
+    // Phase D: Audio Monitor (VAD)
+    pub audio_monitor: crate::kernel::audio::monitor::AudioMonitor,
     
     // Part IX: Long-Horizon Intent Manager
     pub lhim: LongHorizonIntentManager,
+
+    // Phase G: Intent Arbitrator
+    pub arbitrator: crate::kernel::intent::arbitrator::IntentArbitrator,
 }
 
 impl Reactor {
@@ -72,7 +80,9 @@ impl Reactor {
             semantic,
             
             monitor: SelfObservationMonitor::new(),
+            audio_monitor: crate::kernel::audio::monitor::AudioMonitor::new(48000),
             lhim: LongHorizonIntentManager::new(),
+            arbitrator: crate::kernel::intent::arbitrator::IntentArbitrator::new(),
         }
     }
 
@@ -93,31 +103,180 @@ impl Reactor {
         for event in events {
             match event {
                 Event::Input(inp) => {
-                     // 1. Vision: Check for PerceptUpdate -> Derive VisualState Delta
-                     if let super::event::InputContent::Visual(super::event::VisualSignal::PerceptUpdate { hash, .. }) = inp.content {
-                         // Stability logic
-                         let current_stability = self.state.visual.stability_score;
-                         let distance_val = match &inp.content {
-                             super::event::InputContent::Visual(super::event::VisualSignal::PerceptUpdate { distance, .. }) => *distance,
-                             _ => 0,
-                         };
-                         
-                         let new_stability = if distance_val < 5 {
-                             (current_stability + 0.1).min(1.0)
-                         } else {
-                             (current_stability - 0.3).max(0.0)
-                         };
-                         
-                         // Emit derivation immediately
-                         self.state.reduce(StateDelta::VisualStateUpdate {
-                             hash,
-                             stability: new_stability,
-                         });
-                         
-                         // Add to inputs for CancelRegistry processing (which checks for Hard Interruptions)
-                         inputs.push(inp); 
-                     } else {
-                         inputs.push(inp);
+                     // 0. Pre-Process: Lifecycle Updates (AudioStatus)
+                     if let super::event::InputContent::AudioStatus(ref status) = inp.content {
+                          match status {
+                               super::event::AudioStatus::PlaybackStarted => {
+                                    self.audio_monitor.set_system_speaking(true);
+                               }
+                               super::event::AudioStatus::PlaybackEnded => {
+                                    self.audio_monitor.set_system_speaking(false);
+                               }
+                          }
+                     }
+
+                     match &inp.content {
+                         super::event::InputContent::AudioChunk(samples) => {
+                             // Phase D: Core-side VAD
+                             if let Some(signal) = self.audio_monitor.process(samples) {
+                                  // Synthetic Event: VAD Signal
+                                  let sig_evt = super::event::InputEvent {
+                                      source: "CoreVAD".to_string(),
+                                      content: super::event::InputContent::Audio(signal.clone())
+                                  };
+                                  inputs.push(sig_evt); 
+
+                                  // Phase E: Buffer Cleanup on Signal
+                                  match signal {
+                                      super::event::AudioSignal::SpeechStart => {
+                                          let new_id = Uuid::new_v4().to_string();
+                                          let seg = AudioSegment::new(new_id, self.tick);
+                                          self.state.reduce(StateDelta::AudioSegmentCreated(seg));
+                                          
+                                          // Phase G: Interruption Supremacy (Suspend Intent)
+                                          if let crate::kernel::intent::types::IntentState::Forming(cands) = &self.state.intent_state {
+                                              // Suspend the best candidate or just the set?
+                                              // For MVP, if Forming, we suspend the *most confident* one to preserve context.
+                                              if let Some(best) = cands.iter().max_by(|a, b| a.confidence.partial_cmp(&b.confidence).unwrap()) {
+                                                  let susp = crate::kernel::intent::types::IntentState::Suspended(best.clone());
+                                                  self.state.reduce(StateDelta::AssessmentUpdate(susp));
+                                              }
+                                          } else if let crate::kernel::intent::types::IntentState::Stable(cand) = &self.state.intent_state {
+                                               let susp = crate::kernel::intent::types::IntentState::Suspended(cand.clone());
+                                               self.state.reduce(StateDelta::AssessmentUpdate(susp));
+                                          }
+                                          // Note: If Suspended already, stay Suspended.
+                                      }
+                                      super::event::AudioSignal::SpeechEnd => {
+                                          if let Some(id) = &self.state.active_segment_id {
+                                              self.state.reduce(StateDelta::AudioSegmentFinalized { 
+                                                  segment_id: id.clone(), 
+                                                  end_tick: self.tick 
+                                              });
+                                          }
+                                      }
+                                  }
+                             }
+                             
+                             // Phase E: Audio Buffering (Append Frame)
+                             if let Some(id) = &self.state.active_segment_id {
+                                 let id_clone = id.clone(); // Clone ID to avoid borrow issues
+                                 self.state.reduce(StateDelta::AudioFrameAppended { 
+                                     segment_id: id_clone, 
+                                     frames: samples.clone() 
+                                 });
+                             }
+                         },
+                         // IMPORTANT: Handle explicit Audio signals (e.g. from Tests or External VAD)
+                         super::event::InputContent::Audio(ref signal) => {
+                             match signal {
+                                 super::event::AudioSignal::SpeechStart => {
+                                      if self.state.active_segment_id.is_none() {
+                                          let new_id = Uuid::new_v4().to_string();
+                                          let seg = AudioSegment::new(new_id, self.tick);
+                                          self.state.reduce(StateDelta::AudioSegmentCreated(seg));
+                                          
+                                          // Phase G: Interruption Supremacy (Suspend Intent)
+                                          if let crate::kernel::intent::types::IntentState::Forming(cands) = &self.state.intent_state {
+                                              if let Some(best) = cands.iter().max_by(|a, b| a.confidence.partial_cmp(&b.confidence).unwrap()) {
+                                                  let susp = crate::kernel::intent::types::IntentState::Suspended(best.clone());
+                                                  self.state.reduce(StateDelta::AssessmentUpdate(susp));
+                                              }
+                                          } else if let crate::kernel::intent::types::IntentState::Stable(cand) = &self.state.intent_state {
+                                               let susp = crate::kernel::intent::types::IntentState::Suspended(cand.clone());
+                                               self.state.reduce(StateDelta::AssessmentUpdate(susp));
+                                          }
+                                      }
+                                 }
+                                 super::event::AudioSignal::SpeechEnd => {
+                                      if let Some(id) = &self.state.active_segment_id {
+                                          self.state.reduce(StateDelta::AudioSegmentFinalized { 
+                                              segment_id: id.clone(), 
+                                              end_tick: self.tick 
+                                          });
+                                      }
+                                 }
+                             }
+                             inputs.push(inp);
+                         },
+                         super::event::InputContent::Visual(super::event::VisualSignal::PerceptUpdate { hash, distance }) => {
+                             // Stability logic
+                             let current_stability = self.state.visual.stability_score;
+                             let distance_val = *distance;
+                             
+                             let new_stability = if distance_val < 5 {
+                                 (current_stability + 0.1).min(1.0)
+                             } else {
+                                 (current_stability - 0.3).max(0.0)
+                             };
+                             
+                             // Emit derivation immediately
+                             self.state.reduce(StateDelta::VisualStateUpdate {
+                                 hash: *hash,
+                                 stability: new_stability,
+                             });
+                             
+                             // Add to inputs for CancelRegistry processing
+                             inputs.push(inp); 
+                         },
+                         super::event::InputContent::TranscriptionRequest { segment_id } => {
+                             // Gating Logic: Check availability
+                             let mut accepted = false;
+                             if let Some(seg) = self.state.audio_segments.get(segment_id) {
+                                 if seg.status == crate::kernel::audio::segment::SegmentStatus::Pending {
+                                     accepted = true;
+                                 }
+                             }
+                             
+                             if accepted {
+                                 self.state.reduce(StateDelta::AudioSegmentTranscribing(segment_id.clone()));
+                                 effects.push(SideEffect::RequestTranscription { segment_id: segment_id.clone() });
+                             } else {
+                                 warn!("Transcription Request DENIED for segment: {}", segment_id);
+                             }
+                         },
+                          super::event::InputContent::ProvisionalText { content, confidence: _, source_id } => {
+                              self.state.reduce(StateDelta::AudioSegmentTranscribed { 
+                                  segment_id: source_id.clone(), 
+                                  text: content.clone() 
+                              });
+                              
+                              // Phase G: Assess & Decide
+                              let new_intent_state = self.arbitrator.assess(content, source_id, &self.state.intent_state);
+                              self.state.reduce(StateDelta::AssessmentUpdate(new_intent_state.clone()));
+                              
+                              // Decide
+                              let dialogue_act = self.arbitrator.decide(&self.state.intent_state); 
+                              // (Using state.intent_state which is now updated)
+                              
+                              match dialogue_act {
+                                  crate::kernel::intent::types::DialogueAct::AskClarification(msg) => {
+                                      // Emit Audio Side Effect
+                                      // We need an OutputId. For Phase G, we can mock or create a robust one.
+                                      let out_id = crate::kernel::event::OutputId { tick: self.tick.frame, ordinal: 99 };
+                                      effects.push(SideEffect::SpawnAudio(out_id, msg));
+                                  }
+                                  crate::kernel::intent::types::DialogueAct::Confirm(msg) => {
+                                      let out_id = crate::kernel::event::OutputId { tick: self.tick.frame, ordinal: 99 };
+                                      effects.push(SideEffect::SpawnAudio(out_id, msg));
+                                  }
+                                  crate::kernel::intent::types::DialogueAct::Offer(msg) => {
+                                      let out_id = crate::kernel::event::OutputId { tick: self.tick.frame, ordinal: 99 };
+                                      effects.push(SideEffect::SpawnAudio(out_id, msg));
+                                  }
+                                  crate::kernel::intent::types::DialogueAct::Wait => {
+                                      // Hand off to planner (do nothing here, let planner see Stable state)
+                                  }
+                                  crate::kernel::intent::types::DialogueAct::StaySilent => {
+                                      // Do nothing
+                                  }
+                              }
+
+                              inputs.push(inp); // Propagate text to other systems
+                          },
+                         _ => {
+                             inputs.push(inp);
+                         }
                      }
                 },
                 Event::PlanProposed(epoch, intent) => plans.push((epoch, intent)),
@@ -135,6 +294,10 @@ impl Reactor {
         // === 2. CANCEL (Pure Decision) ===
         let cancel_deltas = self.cancel_registry.process(&inputs);
         let has_cancellation = !cancel_deltas.is_empty();
+
+        if has_cancellation {
+            effects.push(SideEffect::StopAudio);
+        }
 
         // === 3. REDUCE (Causality) ===
         for delta in cancel_deltas {
@@ -174,8 +337,15 @@ impl Reactor {
         
         for inp in inputs.iter() {
              match &inp.content {
-                 super::event::InputContent::Audio(super::event::AudioSignal::SpeechStart) => {
-                     // High Energy / Uncertainty
+                 crate::kernel::event::InputContent::Audio(crate::kernel::event::AudioSignal::SpeechStart) => {
+                     // High Energy / Uncertainty -> Presence Request
+                     if let Some(new_state) = crate::kernel::presence::PresenceGraph::transition(
+                         self.state.presence, 
+                         crate::kernel::presence::PresenceRequest::AudioActivity
+                     ) {
+                         self.state.reduce(StateDelta::PresenceUpdate(new_state));
+                     }
+
                      self.state.reduce(StateDelta::LatentUpdate {
                          slot: crate::kernel::latent::LatentSlot {
                              values: vec![1.0], // Simplified "Energy" vector
@@ -215,7 +385,8 @@ impl Reactor {
         let mut intents = Vec::new();
         for (epoch, intent) in plans {
             // STALE REJECTION
-            if epoch.state_version == self.state.version || epoch.state_version + 1 == self.state.version {
+            // Allow version 0 for manual/debug injections
+            if epoch.state_version == 0 || epoch.state_version == self.state.version || epoch.state_version + 1 == self.state.version {
                  intents.push(intent);
             } else {
                 info!("Discarded Stale Plan: Epoch {:?} vs State {}", epoch, self.state.version);
@@ -342,6 +513,8 @@ impl Reactor {
         let mut cadence = interval(Duration::from_millis(TICK_MS));
         cadence.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
+        let mut audio_child: Option<tokio::sync::oneshot::Sender<()>> = None;
+
         loop {
             // Driver: Wait for physical time boundary
             cadence.tick().await;
@@ -358,9 +531,112 @@ impl Reactor {
             // Driver: Execute Side Effects
             for effect in effects {
                 match effect {
-                    SideEffect::Log(msg) => info!("[LOG] {}", msg),
+                    SideEffect::Log(msg) => println!("[LOG] {}", msg),
                     SideEffect::SpawnAudio(id, text) => {
-                        info!("[AUDIO-{:?}] Spawning: '{}'", id, text);
+                        println!("[AUDIO-{:?}] Spawning 'say': '{}'", id, text);
+                        // [Temporary Phase D Output Harness]
+                        // 1. Kill existing
+                        if let Some(stop_tx) = audio_child.take() {
+                             let _ = stop_tx.send(()); 
+                        }
+                        // 2. Spawn new (macOS only for Phase D)
+                        // Use "say" command
+                        match tokio::process::Command::new("say")
+                            .arg(&text)
+                            .kill_on_drop(true) // Ensure it dies if we drop handle
+                            .spawn() 
+                        {
+                            Ok(mut child) => {
+                                let tx_clone = self._tx_clone.clone();
+                                let (stop_tx, mut stop_rx) = tokio::sync::oneshot::channel();
+                                
+                                tokio::spawn(async move {
+                                    // Signal Started
+                                    let _ = tx_clone.send(Event::Input(crate::kernel::event::InputEvent {
+                                        source: "Driver".to_string(),
+                                        content: crate::kernel::event::InputContent::AudioStatus(
+                                            crate::kernel::event::AudioStatus::PlaybackStarted
+                                        )
+                                    })).await;
+
+                                    // Race: Completion vs Kill
+                                    tokio::select! {
+                                        _ = child.wait() => { 
+                                            // Natural Finish or Error
+                                        }
+                                        _ = &mut stop_rx => {
+                                            // Kill Signal
+                                            let _ = child.kill().await;
+                                        }
+                                    }
+                                    
+                                    // Signal Ended (Normalized)
+                                    let _ = tx_clone.send(Event::Input(crate::kernel::event::InputEvent {
+                                        source: "Driver".to_string(),
+                                        content: crate::kernel::event::InputContent::AudioStatus(
+                                            crate::kernel::event::AudioStatus::PlaybackEnded
+                                        )
+                                    })).await;
+                                });
+                                
+                                audio_child = Some(stop_tx);
+                            },
+                            Err(e) => warn!("Failed to spawn audio: {}", e),
+                        }
+                    },
+                    SideEffect::StopAudio => {
+                         if let Some(stop_tx) = audio_child.take() {
+                            println!("[AUDIO] KILL SWITCH ACTIVATED.");
+                            let _ = stop_tx.send(());
+                        }
+                    },
+                    SideEffect::RequestTranscription { segment_id } => {
+                        info!("[TRANSCRIPTION] Requested for Segment: {}", segment_id);
+                        
+                        // 1. Retrieve Audio from SharedState
+                        let audio_data_opt = self.state.audio_segments.get(&segment_id).map(|seg| seg.frames.clone());
+                        let tx = self._tx_clone.clone();
+
+                        if let Some(frames) = audio_data_opt {
+                            tokio::spawn(async move {
+                                // 2. Write to WAV (Temp)
+                                let file_path = format!("/tmp/nexus_seg_{}.wav", segment_id);
+                                let spec = hound::WavSpec {
+                                    channels: 1,
+                                    sample_rate: 48000,
+                                    bits_per_sample: 32,
+                                    sample_format: hound::SampleFormat::Float,
+                                };
+                                
+                                if let Ok(mut writer) = hound::WavWriter::create(&file_path, spec) {
+                                    for &sample in &frames {
+                                        writer.write_sample(sample).unwrap();
+                                    }
+                                    writer.finalize().unwrap();
+                                    info!("[TRANSCRIPTION] Saved WAV to {}", file_path);
+
+                                    // 3. Spawn ASR (Mocked for now with delay, or verify whisper exists)
+                                    // For this phase, we act as a "Mock ASR" that returns text after delay.
+                                    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                                    
+                                    let mock_text = "Phase E verification successful. Gate is working.";
+                                    
+                                    // Send result back
+                                    let _ = tx.send(Event::Input(crate::kernel::event::InputEvent {
+                                        source: "ASR".to_string(),
+                                        content: crate::kernel::event::InputContent::ProvisionalText {
+                                            content: mock_text.to_string(),
+                                            confidence: 0.9,
+                                            source_id: segment_id.clone(),
+                                        }
+                                    })).await;
+                                } else {
+                                    tracing::error!("[TRANSCRIPTION] Failed to write WAV file");
+                                }
+                            });
+                        } else {
+                            warn!("[TRANSCRIPTION] Segment not found in state: {}", segment_id);
+                        }
                     }
                 }
             }

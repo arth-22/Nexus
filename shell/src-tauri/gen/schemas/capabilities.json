@@ -1,1 +1,1 @@
-{}
+{"max-permissions":{"identifier":"max-permissions","description":"Allow all core features for Nexus","local":true,"windows":["*"],"permissions":["core:default","core:event:default","core:window:default","core:webview:default"]}}
