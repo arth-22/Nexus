@@ -1,4 +1,4 @@
-use crate::memory::types::{Claim, EpisodicMemoryEntry, SemanticMemoryEntry};
+use crate::memory::types::{EpisodicMemoryEntry, SemanticMemoryEntry};
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
 use std::fs;

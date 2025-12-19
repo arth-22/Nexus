@@ -1,6 +1,6 @@
 use tokio::sync::mpsc;
 use crate::kernel::event::{Event, InputEvent, VisualSignal, InputContent};
-use tracing::{info, debug, warn};
+use tracing::info;
 use std::time::Duration;
 use img_hash::{HasherConfig, HashAlg}; // Depending on crate api
 

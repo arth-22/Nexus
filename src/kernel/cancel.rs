@@ -6,12 +6,14 @@ use std::collections::HashSet;
 pub struct CancellationRegistry {
     // In Phase 0 kernel, this might just track IDs that *should* be canceled
     // Actual Tokio handles would live in the Effect layer (Reactor), not here
-    pending_cancels: HashSet<String>,
+    _pending_cancels: HashSet<String>,
 }
 
 impl CancellationRegistry {
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            _pending_cancels: HashSet::new(),
+        }
     }
 
     /// Pure function: Observe inputs -> Decide what to cancel -> Return Deltas

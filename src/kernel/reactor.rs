@@ -3,7 +3,7 @@ use tokio::time::{interval, Duration}; // Only for the loop driver
 use tracing::{info, warn};
 use std::path::PathBuf;
 
-use super::event::{Event, InputEvent};
+use super::event::Event;
 use super::state::{SharedState, StateDelta};
 use super::time::{Tick, TICK_MS};
 use super::scheduler::{Scheduler, SideEffect};
@@ -24,7 +24,7 @@ use crate::intent::LongHorizonIntentManager; // Part IX: LHIM
 pub struct Reactor {
     pub receiver: mpsc::Receiver<Event>,
     // We need a sender clone for the planner
-    tx_clone: mpsc::Sender<Event>,
+    _tx_clone: mpsc::Sender<Event>,
     pub state: SharedState,
     pub scheduler: Scheduler,
     pub cancel_registry: CancellationRegistry,
@@ -58,7 +58,7 @@ impl Reactor {
 
         Self {
             receiver,
-            tx_clone: tx.clone(),
+            _tx_clone: tx.clone(),
             state: SharedState::new(),
             scheduler: Scheduler,
             cancel_registry: CancellationRegistry::new(),

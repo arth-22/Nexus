@@ -1,6 +1,5 @@
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use ringbuf::traits::Producer;
-use std::sync::Arc;
 use tracing::{info, error};
 
 pub struct AudioCapture {
@@ -19,7 +18,7 @@ impl AudioCapture {
         
         info!("Audio Input Device: {}", device.name().unwrap_or_default());
 
-        let mut supported_configs_range = device.supported_input_configs()?;
+        let _supported_configs_range = device.supported_input_configs()?;
         
         // We look for a config that supports standard VAD rates: 16000, 32000, 48000
         // We prioritize 16000 for efficiency.

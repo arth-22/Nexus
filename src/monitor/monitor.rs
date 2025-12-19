@@ -1,5 +1,5 @@
-use crate::monitor::types::{SelfObservation, MetaObservationEvent};
-use crate::kernel::event::{Output, OutputStatus, InputEvent, InputContent};
+use crate::monitor::types::SelfObservation;
+use crate::kernel::event::{InputEvent, InputContent};
 use crate::kernel::state::{StateDelta, MetaLatents, SharedState};
 
 /// The Monitor is a passive sidecar that observes the stream of events.

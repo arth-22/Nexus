@@ -27,10 +27,10 @@ impl LongHorizonIntentManager {
 
     /// Primary cycle: Checks active intents in state, applies decay.
     /// Emits `IntentUpdate` deltas.
-    pub fn tick(&self, current_tick: Tick, state: &SharedState) -> Vec<StateDelta> {
+    pub fn tick(&self, _current_tick: Tick, state: &SharedState) -> Vec<StateDelta> {
         let mut deltas = Vec::new();
         
-        for (id, intent) in &state.active_intents {
+        for (_id, intent) in &state.active_intents {
             if intent.status == IntentStatus::Dissolved {
                 continue; // Ignore dead ones (cleanup logic elsewhere?)
             }
@@ -82,7 +82,7 @@ impl LongHorizonIntentManager {
     pub fn handle_interruption(&self, state: &SharedState) -> Vec<StateDelta> {
         // Suspend ALL active intents
         let mut deltas = Vec::new();
-        for (id, intent) in &state.active_intents {
+        for (_id, intent) in &state.active_intents {
             if intent.status == IntentStatus::Active {
                 let mut new_intent = intent.clone();
                 new_intent.status = IntentStatus::Suspended;

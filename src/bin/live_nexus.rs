@@ -7,8 +7,12 @@ use tokio::sync::mpsc;
 #[tokio::main]
 async fn main() {
     // 1. Setup Logging
+    // 1. Setup Logging
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("info"));
+
     let subscriber = FmtSubscriber::builder()
-        .with_env_filter(EnvFilter::from_default_env())
+        .with_env_filter(filter)
         .finish();
     tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
 

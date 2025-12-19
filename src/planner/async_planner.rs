@@ -1,8 +1,8 @@
 use tokio::sync::mpsc;
-use tracing::{info, warn, error};
+use tracing::warn;
 use serde_json::json;
 use crate::kernel::event::Event;
-use crate::planner::types::{StateSnapshot, Intent, PlanningEpoch};
+use crate::planner::types::{StateSnapshot, Intent};
 
 const LLM_URL: &str = "http://localhost:8080/completion";
 const DEFAULT_TIMEOUT_MS: u64 = 200;

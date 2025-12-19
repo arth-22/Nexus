@@ -2,7 +2,6 @@ use crate::memory::types::{Claim, MemoryCandidate, Provenance, EntityId, Predica
 use crate::kernel::event::{Output, OutputStatus};
 use crate::kernel::crystallizer::SymbolicSnapshot; // We need to share this visibility
 use crate::kernel::latent::{LatentSlot, Modality as LatentModality};
-use crate::kernel::time::Tick;
 
 /// The Memory Observer acts as a sensor, detecting potential memory candidates
 /// from the stream of cognition (Outputs, Latents, User Inputs).

@@ -60,7 +60,7 @@ impl Default for VisualState {
 #[derive(Debug, Clone)]
 pub struct SharedState {
     // Private fields to enforce encapsulation
-    beliefs: HashMap<String, f32>,
+    _beliefs: HashMap<String, f32>,
     active_outputs: HashMap<OutputId, Output>,
     // In strict model, we might track canceled task IDs or just effects
     canceled_tasks: HashSet<String>,
@@ -91,7 +91,7 @@ pub struct SharedState {
 impl Default for SharedState {
     fn default() -> Self {
         Self {
-            beliefs: HashMap::new(),
+            _beliefs: HashMap::new(),
             active_outputs: HashMap::new(),
             canceled_tasks: HashSet::new(),
             version: 0,

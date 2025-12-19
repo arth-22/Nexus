@@ -1,6 +1,5 @@
 use crate::memory::types::{Claim, MemoryCandidate, EpisodicMemoryEntry, SemanticMemoryEntry, Modality, Provenance};
 use crate::memory::store::{EpisodicStore, SemanticStore};
-use crate::kernel::time::Tick;
 use std::collections::HashMap;
 
 /// The Consolidator acts as the "Cortex", deciding what becomes durable.

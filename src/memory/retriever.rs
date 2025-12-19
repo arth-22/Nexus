@@ -1,6 +1,5 @@
-use crate::memory::types::{Claim, MemoryCandidate, EpisodicMemoryEntry, SemanticMemoryEntry, Modality, Provenance};
+use crate::memory::types::Claim;
 use crate::memory::store::{EpisodicStore, SemanticStore};
-use crate::kernel::time::Tick;
 use std::cmp::Ordering;
 
 /// Evidence retrieved from memory for the Planner.

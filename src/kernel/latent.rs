@@ -28,7 +28,7 @@ impl LatentState {
     
     pub fn global_uncertainty(&self) -> f32 {
         if self.slots.is_empty() {
-             return 0.0; // Or 1.0 (Max uncertainty)?
+             // Or 1.0 (Max uncertainty)?
              // If "Empty" means "I know nothing", maybe 1.0?
              // But if "Uncertainty" implies "Confusion", then Empty = Clear?
              // Let's assume uncertainty is Entropy.

@@ -51,12 +51,40 @@ sudo apt install libasound2-dev
 ```
 
 ### Running the Kernel
-Run the interactive live session:
+
+The system requires two components running in parallel: the **Brain (LLM)** and the **Body (Cortex)**.
+
+#### 1. Start the Brain
+Nexus expects an LLM server compatible with the llama.cpp API running on port 8080.
+**Prerequisite**: You must have `llama-server` installed (part of [llama.cpp](https://github.com/ggerganov/llama.cpp)).
+
 ```bash
+# Detected via 'which llama-server' and local file check:
+/opt/homebrew/bin/llama-server -m Llama-3.2-1B-Instruct-Q4_K_M.gguf -c 2048 --port 8080
+
+# SAFE MODE (If the above crashes with "ggml-metal"):
+# Run on CPU only (slower but stable)
+/opt/homebrew/bin/llama-server -m Llama-3.2-1B-Instruct-Q4_K_M.gguf -c 2048 --port 8080 -ngl 0
+
+# NOTE: CPU mode is slow. You MUST increase the planner timeout when running the kernel:
+# NEXUS_PLANNER_TIMEOUT_MS=3000 cargo run --bin live_nexus
+```
+*   **Server**: Installed via Homebrew (`/opt/homebrew/bin/llama-server`).
+*   **Model**: Located in current directory (`Llama-3.2-1B-Instruct-Q4_K_M.gguf`).
+*   **Context**: 2048 context window is sufficient for current prompts.
+
+#### 2. Start the Body (Cortex)
+In a separate terminal, run the reactor loop:
+
+```bash
+# Run with default logging (INFO)
 cargo run --bin live_nexus
+
+# Run with verbose debugging
+RUST_LOG=debug cargo run --bin live_nexus
 ```
 *   **Stdin**: Type messages to simulate user input.
-*   **Logs**: `stdout` shows high-level flow. Use `RUST_LOG=debug` for deep reactor tracing.
+*   **Logs**: You should see "Reactor Pipeline Started" and "Audio Capture Initialized".
 
 ### Verification
 We use strict behavior-driven tests for critical paths. **Run these before pushing.**
