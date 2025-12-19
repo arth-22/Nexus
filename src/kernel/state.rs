@@ -1,4 +1,5 @@
 use super::event::{InputEvent, Output, OutputId, OutputStatus, InputContent, AudioSignal};
+use super::presence::{PresenceState, PresenceRequest, PresenceGraph};
 use std::collections::{HashMap, HashSet};
 use crate::kernel::time::Tick;
 use crate::intent::{LongHorizonIntent, IntentId};
@@ -39,6 +40,7 @@ pub enum StateDelta {
     LatentUpdate { slot: crate::kernel::latent::LatentSlot },
     MetaLatentUpdate { delta: MetaLatents }, 
     IntentUpdate { intent: LongHorizonIntent },
+    PresenceTransition(PresenceRequest),
     Tick(Tick),
 }
 
@@ -85,7 +87,11 @@ pub struct SharedState {
     pub meta_latents: MetaLatents,
     
     // Long-Horizon Intents (Part IX)
+    // Long-Horizon Intents (Part IX)
     pub active_intents: HashMap<IntentId, LongHorizonIntent>,
+
+    // Phase B: Presence State (Authoritative)
+    pub presence: PresenceState,
 }
 
 impl Default for SharedState {
@@ -105,6 +111,7 @@ impl Default for SharedState {
             latents: crate::kernel::latent::LatentState::default(),
             meta_latents: MetaLatents::default(),
             active_intents: HashMap::new(),
+            presence: PresenceState::default(),
         }
     }
 }
@@ -247,6 +254,13 @@ impl SharedState {
             }
             StateDelta::IntentUpdate { intent } => {
                 self.active_intents.insert(intent.id, intent);
+            }
+            StateDelta::PresenceTransition(request) => {
+                if let Some(new_state) = PresenceGraph::transition(self.presence, request) {
+                    // TODO: Emit event? For now just mutate.
+                    self.presence = new_state;
+                }
+                // If None, the transition was rejected by the Core (Authority).
             }
         }
     }
