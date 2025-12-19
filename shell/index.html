@@ -1,45 +1,35 @@
 <!DOCTYPE html>
 <html lang="en">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Nexus</title>
-    <style>
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-            background-color: transparent;
-            color: #ccc;
-            margin: 0;
-            padding: 20px;
-            overflow: hidden;
-            user-select: none;
-            cursor: default;
-        }
-        #presence-indicator {
-            width: 8px;
-            height: 8px;
-            background-color: #333;
-            border-radius: 50%;
-            margin-bottom: 20px;
-            transition: background-color 0.5s ease;
-        }
-        /* States */
-        .state-dormant { background-color: #333; }
-        .state-attentive { background-color: #555; }
-        .state-engaged { background-color: #888; } /* Not GREEN. No urgency. */
-        .state-holding { background-color: #444; }
-        
-        #output-area {
-            font-size: 14px;
-            line-height: 1.4;
-            opacity: 0.8;
-            white-space: pre-wrap;
-        }
-    </style>
+    <link rel="stylesheet" href="style.css">
 </head>
-<body>
-    <div id="presence-indicator" class="state-dormant"></div>
-    <div id="output-area"></div>
-    <script src="main.js"></script>
+
+<body class="state-dormant">
+    <!-- Region 1: Presence Indicator -->
+    <div id="presence-header">
+        <div id="presence-dot"></div>
+    </div>
+
+    <!-- Region 2: The Thinking Canvas -->
+    <div id="canvas">
+        <!-- Text fragments injected here -->
+    </div>
+
+    <!-- Region 3: Input Affordances -->
+    <div id="input-footer">
+        <!-- Invisible capture for ambient keyboard input -->
+        <!-- Note: We keep focus here to capture keys, but render elsewhere -->
+        <textarea id="ambient-input" autocomplete="off" spellcheck="false"></textarea>
+
+        <!-- Voice Toggle -->
+        <div id="mic-toggle" role="button" tabindex="0" aria-label="Toggle Microphone"></div>
+    </div>
+
+    <script src="renderer.js"></script>
 </body>
+
 </html>

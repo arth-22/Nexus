@@ -3,78 +3,108 @@
   windows_subsystem = "windows"
 )]
 
-use tauri::{Manager, RunEvent};
+use tauri::Emitter;
 // use nexus::kernel::presence::{PresenceRequest, PresenceState};
-// In a real implementation we would import more from nexus::kernel
+
+// Phase C: Commands
+#[tauri::command]
+fn send_input_fragment(text: String) {
+    // UI -> Core Strict Boundary (Request Only)
+    println!("[UI->Core] Input Fragment: '{}'", text);
+    
+    // In real impl: nexus::kernel::reactor::send(InputEvent::Fragment(text));
+}
 
 #[tauri::command]
-fn send_input_signal(signal: String) {
-    // UI -> Core Strict Boundary (Request Only)
-    // This function acts as the "Input Boundary" described in Phase B
-    println!("UI Sent Signal: {}", signal);
+fn toggle_mic(active: bool) {
+    println!("[UI->Core] Mic Toggle: {}", active);
+    // In real impl: nexus::kernel::audio::set_listening(active);
+}
+
+#[tauri::command]
+fn ui_attach(app_handle: tauri::AppHandle) {
+    println!("[UI->Core] UI Attached. Pushing Context...");
     
-    // In a full implementation, this would send an async message to the Kernel Reactor.
-    // For Phase B Prototype, we log it to prove the boundary exists.
-    // nexus::kernel::reactor::send(InputEvent::from_signal(signal));
+    // Push-Based Hydration (Mock for Phase C)
+    // Core sends "ContextSnapshot" immediately on attach.
+    // UI never asks "GetHistory".
+    
+    let mock_history = vec![
+        serde_json::json!({"role": "user", "content": "Hello Nexus"}),
+        serde_json::json!({"role": "system", "content": "Hello. I am listening."}),
+    ];
+    
+    app_handle.emit("nexus-event", 
+        serde_json::json!({
+            "type": "ContextSnapshot",
+            "content": mock_history
+        })
+    ).unwrap_or(());
 }
 
 fn main() {
     // 1. BOOTLOADER: Start Nexus Core (Detached)
-    // The Core owns its own runtime. UI death != Core death.
     std::thread::spawn(|| {
         let rt = tokio::runtime::Runtime::new().unwrap();
         rt.block_on(async {
             println!("[Core] Kernel starting in background...");
-            // nexus::start_kernel().await; 
-            // Loop forever to prove detached survival
             loop {
                 tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
-                println!("[Core] I am still here. Silence is safe.");
+                // println!("[Core] I am still here. Silence is safe.");
             }
         });
     });
 
     // 2. UI SHELL: Start Tauri
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![send_input_signal])
+        .invoke_handler(tauri::generate_handler![
+            send_input_fragment, 
+            toggle_mic,
+            ui_attach
+        ])
         .setup(|app| {
-            let handle = app.handle();
-            // Mock Event Stream (Core -> UI) for Phase B Demo
+            let handle = app.handle().clone();
+            // Mock Event Stream (Core -> UI) for Phase C Interaction Tests
             std::thread::spawn(move || {
+                let mut tick = 0;
                 loop {
-                    std::thread::sleep(std::time::Duration::from_secs(10));
-                    // Simulate Core state change
-                    handle.emit_all("nexus-event", 
-                        serde_json::json!({
-                            "type": "PresenceUpdate",
-                            "state": "Attentive"
-                        })
-                    ).unwrap_or(());
+                    std::thread::sleep(std::time::Duration::from_secs(5));
+                    tick += 1;
+                    
+                    // Simulate occasional Presence Updates (No Animation Loop!)
+                    if tick % 4 == 0 {
+                        // Toggle Attentive / Engaged
+                         handle.emit("nexus-event", 
+                            serde_json::json!({
+                                "type": "PresenceUpdate",
+                                "state": if tick % 8 == 0 { "Engaged" } else { "Attentive" }
+                            })
+                        ).unwrap_or(());
+                    }
+                    
+                    // Simulate occasional Output Draft -> Commit
+                    if tick == 10 {
+                         handle.emit("nexus-event", 
+                            serde_json::json!({
+                                "type": "OutputEvent",
+                                "content": "Drafting...",
+                                "status": "Draft"
+                            })
+                        ).unwrap_or(());
+                    }
+                    if tick == 12 {
+                         handle.emit("nexus-event", 
+                            serde_json::json!({
+                                "type": "OutputEvent",
+                                "content": "Output finalized.",
+                                "status": "SoftCommit"
+                            })
+                        ).unwrap_or(());
+                    }
                 }
             });
             Ok(())
         })
-        .build(tauri::generate_context!())
-        .expect("error while running tauri application")
-        .run(|_app_handle, event| match event {
-            RunEvent::ExitRequested { api, .. } => {
-                // PREVENT KERNEL SHUTDOWN
-                // UI detach logic would go here.
-                // For Phase B, we verify that closing the window does not kill the thread spawned above 
-                // (except that main() ending kills threads unless we handle it).
-                
-                // Correction: In main(), if run() returns, the process exits.
-                // To support "Core survives UI close", we must PREVENT exit if we want the process to stay alive
-                // or ensure we run as a daemon. 
-                // For Phase B "Desktop App", safe default is: App Close = Hide Window (on Mac) or truly Stop?
-                // The requirement is "Core can exist without UI". 
-                
-                // Ideally we use: api.prevent_exit(); 
-                // But for the Phase B Test "Core survives UI close", we might want to keep running.
-                // Let's prevent exit to simulate background persistence.
-                api.prevent_exit();
-                println!("[Shell] Window closed. Core persists.");
-            }
-            _ => {}
-        });
+        .run(tauri::generate_context!())
+        .expect("error while running tauri application");
 }
