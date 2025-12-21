@@ -13,6 +13,10 @@ pub enum SideEffect {
     RequestTranscription { segment_id: String },
     // Phase L
     AskMemoryConsent { key: crate::kernel::memory::types::MemoryKey, prompt_id: String },
+    RequestSpeech {
+        intent: crate::kernel::speech::planner::SpeechIntent,
+        output_id: uuid::Uuid,
+    },
 }
 
 impl Scheduler {

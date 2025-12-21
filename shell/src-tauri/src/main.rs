@@ -14,6 +14,16 @@ use std::fs;
 use serde::{Serialize, Deserialize};
 mod alpha;
 use alpha::AlphaAccess;
+use uuid::Uuid;
+use std::collections::HashMap;
+use std::time::{Duration, Instant};
+use tokio::task::JoinHandle;
+
+// Internal Driver Events (Never touch Kernel)
+enum DriverEvent {
+    GeneratedSpeech { output_id: Uuid, text: String },
+    SpeechFailed { output_id: Uuid },
+}
 
 struct AudioState(audio_capture::AudioController);
 struct CoreSender(tokio::sync::mpsc::Sender<Event>);
@@ -53,8 +63,13 @@ fn save_onboarding_state(app: &tauri::AppHandle, state: &OnboardingState) {
 }
 
 #[tauri::command]
-fn send_input_fragment(text: String) {
+fn send_input_fragment(text: String, core_state: tauri::State<'_, CoreSender>) {
     println!("[UI->Core] Input Fragment: '{}'", text);
+    let evt = Event::Input(nexus::kernel::event::InputEvent {
+        source: "Frontend".to_string(),
+        content: nexus::kernel::event::InputContent::Text(text),
+    });
+    let _ = core_state.0.try_send(evt);
 }
 
 #[tauri::command]
@@ -132,7 +147,7 @@ fn toggle_mic(active: bool, state: tauri::State<AudioState>, app: tauri::AppHand
 async fn ui_attach(app_handle: tauri::AppHandle, core_state: tauri::State<'_, CoreSender>) -> Result<(), ()> {
     // Phase M: Check Access
     // Note: We already check access in setup(), but this check protects late-binding UI.
-    if let Some(access) = AlphaAccess::load(&app_handle) { 
+    if let Some(_access) = AlphaAccess::load(&app_handle) { 
        // Logic to check specific UI permissions if needed
     }
     
@@ -201,6 +216,13 @@ fn resolve_memory_consent(key_json: String, state: String, core_state: tauri::St
     }
 }
 
+#[tauri::command]
+fn grant_alpha_access(app: tauri::AppHandle) -> Result<(),String> {
+   println!("[Alpha] Access Grant Requested via UI.");
+   crate::alpha::AlphaAccess::grant(&app)
+       .map_err(|e: Box<dyn std::error::Error>| e.to_string())
+}
+
 fn main() {
     // 0. Init Logger
     tracing_subscriber::fmt::init();
@@ -251,7 +273,8 @@ fn main() {
             complete_onboarding,
             resolve_memory_consent,
             should_show_welcome,
-            mark_welcome_seen
+            mark_welcome_seen,
+            grant_alpha_access
         ])
 
     .setup(move |app| {
@@ -305,8 +328,6 @@ fn main() {
             
             // Clone Arc for the kernel thread
             let reactor_for_thread = reactor_arc.clone();
-            // Clone Arc for the kernel thread
-            let reactor_for_thread = reactor_arc.clone();
             let kernel_tx = tx.clone();
             let handle_for_thread = handle.clone();
             
@@ -324,6 +345,17 @@ fn main() {
                     use tokio::time::{interval, Duration};
                     use tokio::process::Command; // Ensure Command is available
 
+                    // Initialize Services
+                    let llm_service = nexus::services::llm::client::LLMService::new();
+                    
+                    // Driver Internal Channel
+                    let (driver_tx, mut driver_rx) = tokio::sync::mpsc::channel(100);
+
+                    // Driver State
+                    let mut speech_tasks: HashMap<Uuid, JoinHandle<()>> = HashMap::new();
+                    let mut speech_dedupe: HashMap<Uuid, Instant> = HashMap::new();
+                    let status_tx = kernel_tx.clone();
+
                     let mut cadence = interval(Duration::from_millis(nexus::kernel::time::TICK_MS));
                     let mut audio_child: Option<tokio::sync::oneshot::Sender<()>> = None;
 
@@ -331,6 +363,61 @@ fn main() {
                     
                     loop {
                         cadence.tick().await;
+
+                        // Drain Driver Events
+                        while let Ok(evt) = driver_rx.try_recv() {
+                            match evt {
+                                DriverEvent::GeneratedSpeech { output_id, text } => {
+                                    if speech_tasks.contains_key(&output_id) {
+                                        speech_tasks.remove(&output_id);
+                                        // Telemetry: Generated
+                                        let _ = status_tx.send(Event::Telemetry(
+                                            nexus::kernel::telemetry::event::TelemetryEvent::SpeechLifecycle(
+                                                nexus::kernel::telemetry::event::SpeechLifecycleEvent::Generated
+                                            )
+                                        )).await;
+
+                                        println!("[AUDIO-{:?}] Spawning 'say': '{}'", output_id, text);
+                                        // Kill existing
+                                        if let Some(stop_tx) = audio_child.take() {
+                                            let _ = stop_tx.send(()); 
+                                        }
+
+                                        match Command::new("say").arg(&text).kill_on_drop(true).spawn() {
+                                            Ok(mut child) => {
+                                                let tx_clone = status_tx.clone();
+                                                let (stop_tx, mut stop_rx) = tokio::sync::oneshot::channel();
+                                                audio_child = Some(stop_tx);
+                                                tokio::spawn(async move {
+                                                    let _ = tx_clone.send(Event::Input(nexus::kernel::event::InputEvent {
+                                                        source: "Driver".to_string(),
+                                                        content: nexus::kernel::event::InputContent::AudioStatus(
+                                                            nexus::kernel::event::AudioStatus::PlaybackStarted
+                                                        )
+                                                    })).await;
+                                                    tokio::select! { _ = child.wait() => {}, _ = &mut stop_rx => { let _ = child.kill().await; } }
+                                                    let _ = tx_clone.send(Event::Input(nexus::kernel::event::InputEvent {
+                                                        source: "Driver".to_string(),
+                                                        content: nexus::kernel::event::InputContent::AudioStatus(
+                                                            nexus::kernel::event::AudioStatus::PlaybackEnded
+                                                        )
+                                                    })).await;
+                                                });
+                                            },
+                                            Err(e) => println!("[AUDIO] Failed to spawn 'say': {}", e),
+                                        }
+                                    }
+                                },
+                                DriverEvent::SpeechFailed { output_id } => {
+                                    speech_tasks.remove(&output_id);
+                                    let _ = status_tx.send(Event::Telemetry(
+                                        nexus::kernel::telemetry::event::TelemetryEvent::SpeechLifecycle(
+                                            nexus::kernel::telemetry::event::SpeechLifecycleEvent::Failed
+                                        )
+                                    )).await;
+                                }
+                            }
+                        }
                         
                         // Drain events and tick
                         let mut effects = Vec::new();
@@ -371,6 +458,7 @@ fn main() {
                                             
                                             tokio::spawn(async move {
                                                 // Signal Started
+                                                println!("[Driver] Audio Process Started");
                                                 let _ = tx_clone.send(Event::Input(nexus::kernel::event::InputEvent {
                                                     source: "Driver".to_string(),
                                                     content: nexus::kernel::event::InputContent::AudioStatus(
@@ -380,13 +468,17 @@ fn main() {
 
                                                 // Race: Completion vs Kill
                                                 tokio::select! {
-                                                    _ = child.wait() => {}
+                                                    res = child.wait() => {
+                                                        println!("[Driver] Audio Process Exited: {:?}", res);
+                                                    }
                                                     _ = &mut stop_rx => {
+                                                        println!("[Driver] Audio Process KILLED");
                                                         let _ = child.kill().await;
                                                     }
                                                 }
                                                 
                                                 // Signal Ended
+                                                println!("[Driver] Sending PlaybackEnded");
                                                 let _ = tx_clone.send(Event::Input(nexus::kernel::event::InputEvent {
                                                     source: "Driver".to_string(),
                                                     content: nexus::kernel::event::InputContent::AudioStatus(
@@ -405,6 +497,12 @@ fn main() {
                                         println!("[AUDIO] KILL SWITCH ACTIVATED.");
                                         let _ = stop_tx.send(());
                                     }
+                                    for (_, task) in speech_tasks.drain() { task.abort(); }
+                                    let _ = status_tx.send(Event::Telemetry(
+                                        nexus::kernel::telemetry::event::TelemetryEvent::SpeechLifecycle(
+                                            nexus::kernel::telemetry::event::SpeechLifecycleEvent::Aborted
+                                        )
+                                    )).await;
                                 },
                                 nexus::kernel::scheduler::SideEffect::RequestTranscription { segment_id } => {
                                     println!("[TRANSCRIPTION] Requested for: {}", segment_id);
@@ -414,9 +512,53 @@ fn main() {
                                     let _ = handle_for_thread.emit("ask-memory-consent", serde_json::json!({
                                         "key": key
                                     }));
+                                },
+                                // Phase N: LLM Speech
+                                nexus::kernel::scheduler::SideEffect::RequestSpeech { intent, output_id } => {
+                                     // Dedupe
+                                     if let Some(inst) = speech_dedupe.get(&output_id) {
+                                         if inst.elapsed() < Duration::from_secs(10) { continue; }
+                                     }
+                                     speech_dedupe.insert(output_id, Instant::now());
+                                     
+                                     // Telemetry: Requested
+                                     let _ = status_tx.send(Event::Telemetry(
+                                         nexus::kernel::telemetry::event::TelemetryEvent::SpeechLifecycle(
+                                             nexus::kernel::telemetry::event::SpeechLifecycleEvent::Requested
+                                         )
+                                     )).await;
+
+                                     // Spawn Task
+                                     let service = llm_service.clone();
+                                     let dr_tx = driver_tx.clone();
+                                     let oid = output_id;
+                                     
+                                     let task = tokio::spawn(async move {
+                                         // Hard Timeout 2s
+                                         let result = tokio::time::timeout(Duration::from_secs(2), service.generate_speech(intent)).await;
+                                         
+                                         match result {
+                                             Ok(Ok(text)) => {
+                                                 let _ = dr_tx.send(DriverEvent::GeneratedSpeech { output_id: oid, text }).await;
+                                             },
+                                             Ok(Err(e)) => {
+                                                 println!("[LLM] Error: {}", e);
+                                                 let _ = dr_tx.send(DriverEvent::SpeechFailed { output_id: oid }).await;
+                                             },
+                                             Err(_) => { // Timeout
+                                                 println!("[LLM] Timeout");
+                                                 let _ = dr_tx.send(DriverEvent::SpeechFailed { output_id: oid }).await;
+                                             }
+                                         }
+                                     });
+                                     
+                                     speech_tasks.insert(output_id, task);
                                 }
                             }
                         }
+                        
+                        // Cleanup Dedupe (TTL)
+                        speech_dedupe.retain(|_, time| time.elapsed() < Duration::from_secs(10));
                     }
                 });
             });

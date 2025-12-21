@@ -10,7 +10,17 @@ use crate::kernel::memory::types::MemoryId;
 // Forbidden: Text, Audio Frames, Embeddings, Confidence Scores (if derived from content)
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum SpeechLifecycleEvent {
+    Requested,
+    Generated,
+    Aborted,
+    Failed,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum TelemetryEvent {
+    // Phase N: Speech Lifecycle
+    SpeechLifecycle(SpeechLifecycleEvent),
     PresenceTransition {
         from: PresenceState,
         to: PresenceState,

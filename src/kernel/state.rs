@@ -66,6 +66,8 @@ pub enum StateDelta {
     // Phase L: Memory Consent
     MemoryConsentAsked(MemoryKey, Tick),
     MemoryConsentResolved { key: MemoryKey, state: MemoryConsentState, resolved_at: Tick },
+    // Clearing Outputs (Phase Q Fix)
+    AllOutputsCleared, 
 }
 
 #[derive(Debug, Clone)]
@@ -208,9 +210,11 @@ impl SharedState {
 
     /// Pure reduction: State + Delta -> Mutated State
     pub fn reduce(&mut self, delta: StateDelta) {
-        // Version increments on mutation (except maybe Tick?)
-        // Let's increment on everything for safety.
-        self.version += 1;
+        // Version increments on mutation (except Tick to allow slow planning)
+        // Version increments on mutation (except Tick and High-Freq Audio to allow slow planning)
+        if !matches!(delta, StateDelta::Tick(_) | StateDelta::AudioFrameAppended { .. }) {
+            self.version += 1;
+        }
         
         match delta {
             StateDelta::Tick(t) => {
@@ -342,6 +346,9 @@ impl SharedState {
             }
             StateDelta::AssessmentUpdate(new_state) => {
                 self.intent_state = new_state;
+            }
+            StateDelta::AllOutputsCleared => {
+                self.active_outputs.clear();
             }
             // Phase H: Memory Reduction
             StateDelta::MemoryCandidateCreated(candidate) => {

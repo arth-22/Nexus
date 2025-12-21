@@ -74,6 +74,9 @@ pub struct Reactor {
     // Phase K: Onboarding Lock
     pub mode: KernelMode,
 
+    // Phase N: Speech Planner
+    pub speech_planner: crate::kernel::speech::planner::SpeechPlanner,
+
     // New config field
     pub config: ReactorConfig,
 }
@@ -116,6 +119,7 @@ impl Reactor {
             arbitrator: crate::kernel::intent::arbitrator::IntentArbitrator::new(),
             telemetry, // Use the telemetry created above
             mode: KernelMode::Active, // Default to Active (Safe for Tests), Driver will override if needed.
+            speech_planner: crate::kernel::speech::planner::SpeechPlanner::new(),
             config, // Add the config field
         }
     }
@@ -163,6 +167,8 @@ impl Reactor {
                                }
                                super::event::AudioStatus::PlaybackEnded => {
                                     self.audio_monitor.set_system_speaking(false);
+                                    // CRITICAL FIX: Clear active outputs so planning can resume
+                                    self.state.reduce(StateDelta::AllOutputsCleared); 
                                }
                           }
                      }
@@ -200,11 +206,12 @@ impl Reactor {
                                           // Note: If Suspended already, stay Suspended.
                                       }
                                       super::event::AudioSignal::SpeechEnd => {
-                                          if let Some(id) = &self.state.active_segment_id {
+                                          if let Some(id) = self.state.active_segment_id.clone() {
                                               self.state.reduce(StateDelta::AudioSegmentFinalized { 
                                                   segment_id: id.clone(), 
                                                   end_tick: self.tick 
                                               });
+                                              effects.push(SideEffect::RequestTranscription { segment_id: id });
                                           }
                                       }
                                   }
@@ -241,11 +248,12 @@ impl Reactor {
                                       }
                                  }
                                  super::event::AudioSignal::SpeechEnd => {
-                                      if let Some(id) = &self.state.active_segment_id {
+                                      if let Some(id) = self.state.active_segment_id.clone() {
                                           self.state.reduce(StateDelta::AudioSegmentFinalized { 
                                               segment_id: id.clone(), 
                                               end_tick: self.tick 
                                           });
+                                          effects.push(SideEffect::RequestTranscription { segment_id: id });
                                       }
                                  }
                              }
@@ -305,7 +313,7 @@ impl Reactor {
                                       self.state.reduce(d);
                                   }
                                   
-                                  // Phase I: Long-Horizon Intent Registration
+                  // Phase I: Long-Horizon Intent Registration
                                   // This is the primary entry point for Intent Creation
                                   let intent_deltas = self.lhim.register_intent(cand, &self.state, self.tick, &mut self.telemetry);
                                   for d in intent_deltas {
@@ -317,30 +325,55 @@ impl Reactor {
                               let dialogue_act = self.arbitrator.decide(&self.state.intent_state); 
                               // (Using state.intent_state which is now updated)
                               
-                              match dialogue_act {
-                                  crate::kernel::intent::types::DialogueAct::AskClarification(msg) => {
-                                      // Emit Audio Side Effect
-                                      // We need an OutputId. For Phase G, we can mock or create a robust one.
-                                      let out_id = crate::kernel::event::OutputId { tick: self.tick.frame, ordinal: 99 };
-                                      effects.push(SideEffect::SpawnAudio(out_id, msg));
-                                  }
-                                  crate::kernel::intent::types::DialogueAct::Confirm(msg) => {
-                                      let out_id = crate::kernel::event::OutputId { tick: self.tick.frame, ordinal: 99 };
-                                      effects.push(SideEffect::SpawnAudio(out_id, msg));
-                                  }
-                                  crate::kernel::intent::types::DialogueAct::Offer(msg) => {
-                                      let out_id = crate::kernel::event::OutputId { tick: self.tick.frame, ordinal: 99 };
-                                      effects.push(SideEffect::SpawnAudio(out_id, msg));
-                                  }
-                                  crate::kernel::intent::types::DialogueAct::Wait => {
-                                      // Hand off to planner (do nothing here, let planner see Stable state)
-                                  }
-                                  crate::kernel::intent::types::DialogueAct::StaySilent => {
-                                      // Do nothing
-                                  }
-                              }
+                               if let Some(speech_intent) = self.speech_planner.plan(&dialogue_act, self.config.safe_mode) {
+                                    info!("SpeechPlanner produced intent: {:?}", speech_intent);
+                                    let output_id = Uuid::new_v4();
+                                    
+                                    // Telemetry: Log the cognitive decision to speak
+                                    self.telemetry.record(TelemetryEvent::DialogueAct { act: (&dialogue_act).into() });
 
-                              inputs.push(inp); // Propagate text to other systems
+                                    effects.push(SideEffect::RequestSpeech { 
+                                        intent: speech_intent, 
+                                        output_id 
+                                    });
+                               } else {
+                                   // If planner returned None (Silence/Wait or SafeMode), we do nothing.
+                                   // Except maybe log "StaySilent" for debugging if needed.
+                                   if let crate::kernel::intent::types::DialogueAct::StaySilent = dialogue_act {
+                                       // No-op
+                                   }
+                               }
+
+                               inputs.push(inp); // Propagate text to other systems
+                          },
+                          
+                          super::event::InputContent::Text(text) => {
+                              // Treat direct text input exactly like high-confidence transcription
+                              self.state.reduce(StateDelta::InputReceived(inp.clone()));
+                              
+                              // Phase G: Assess & Decide
+                              let new_intent_state = self.arbitrator.assess(text, &inp.source, &self.state.intent_state);
+                              self.state.reduce(StateDelta::AssessmentUpdate(new_intent_state.clone()));
+                              
+                              // Phase H: Memory Ingest
+                              if let crate::kernel::intent::types::IntentState::Stable(cand) = &new_intent_state {
+                                  let memory_deltas = self.consolidator.process_intent(cand, &self.state, &mut self.telemetry);
+                                  for d in memory_deltas { self.state.reduce(d); }
+                                  
+                                  // Phase I: LHIM
+                                  let intent_deltas = self.lhim.register_intent(cand, &self.state, self.tick, &mut self.telemetry);
+                                  for d in intent_deltas { self.state.reduce(d); }
+                              }
+                              
+                              // Decide (Immediate Reaction)
+                              let dialogue_act = self.arbitrator.decide(&self.state.intent_state);
+                               if let Some(speech_intent) = self.speech_planner.plan(&dialogue_act, self.config.safe_mode) {
+                                    let output_id = Uuid::new_v4();
+                                    self.telemetry.record(TelemetryEvent::DialogueAct { act: (&dialogue_act).into() });
+                                    effects.push(SideEffect::RequestSpeech { intent: speech_intent, output_id });
+                               }
+
+                              inputs.push(inp);
                           },
 
                          super::event::InputContent::MemoryConsentResponse { key, state } => {
@@ -361,6 +394,7 @@ impl Reactor {
                      }
                 },
                 Event::PlanProposed(epoch, intent) => plans.push((epoch, intent)),
+                Event::Telemetry(evt) => self.telemetry.record(evt),
             }
         }
         
@@ -529,9 +563,10 @@ impl Reactor {
             // STALE REJECTION
             // Allow version 0 for manual/debug injections
             if epoch.state_version == 0 || epoch.state_version == self.state.version || epoch.state_version + 1 == self.state.version {
+                 println!("[Reactor] Accepted Plan: {:?}", intent);
                  intents.push(intent);
             } else {
-                info!("Discarded Stale Plan: Epoch {:?} vs State {}", epoch, self.state.version);
+                println!("[Reactor] Discarded Stale Plan: Epoch {:?} vs State {}", epoch, self.state.version);
             }
         }
 
@@ -545,6 +580,7 @@ impl Reactor {
              };
 
              if needs_plan {
+                 println!("[Reactor] Opportunity Detected. Dispatching to Planner (State Ver: {})", self.state.version);
                  let context = self.lhim.get_context(&self.state);
                  let snapshot = self.state.snapshot(self.tick, context);
                  // Future: Inject Memory Retrieval into Snapshot here?
@@ -553,6 +589,8 @@ impl Reactor {
                  // So we don't inject passively yet.
                  self.planner.dispatch(snapshot);
                  self.last_planned_version = Some(self.state.version);
+             } else {
+                // println!("[Reactor] No Plan Needed (Version Match)");
              }
         }
         
@@ -565,6 +603,7 @@ impl Reactor {
                  use crate::outputs::realizer::realize;
                  
                  let decision = check_gate(&self.state);
+                 println!("[Reactor] Crystallization Decision: {:?}", decision);
                  match decision {
                      CrystallizationDecision::Deny => {
                          info!("Gate DENIED response crystallization due to instability.");
@@ -796,13 +835,10 @@ impl Reactor {
                                     writer.finalize().unwrap();
                                     info!("[TRANSCRIPTION] Saved WAV to {}", file_path);
 
-                                    // 3. Spawn ASR (Mocked for now with delay, or verify whisper exists)
-                                    // For this phase, we act as a "Mock ASR" that returns text after delay.
+                                    // 3. Spawn ASR (Mocked)
                                     tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-                                    
                                     let mock_text = "Phase E verification successful. Gate is working.";
                                     
-                                    // Send result back
                                     let _ = tx.send(Event::Input(crate::kernel::event::InputEvent {
                                         source: "ASR".to_string(),
                                         content: crate::kernel::event::InputContent::ProvisionalText {
@@ -818,7 +854,13 @@ impl Reactor {
                         } else {
                             warn!("[TRANSCRIPTION] Segment not found in state: {}", segment_id);
                         }
-                    }
+                    },
+                    
+                    // Legacy Reactor Loop Stub for Phase N
+                    SideEffect::RequestSpeech { .. } => {
+                        // In Phase N, main.rs drives this. Reactor::run is legacy/GUI.
+                        info!("[REACTOR] Ignoring RequestSpeech (Legacy Helper Loop)");
+                    },
 
                     SideEffect::AskMemoryConsent { key, prompt_id: _ } => {
                         // In Reactor test driver, we just log it. 

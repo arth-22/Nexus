@@ -249,6 +249,22 @@ window.addEventListener('DOMContentLoaded', async () => {
         // Hide everything else
         dom.canvas.style.display = 'none';
         dom.input.disabled = true;
+
+        // Enable Grant Button
+        const grantBtn = document.getElementById('grant-access-btn');
+        if (grantBtn) {
+            grantBtn.onclick = async () => {
+                console.log('[Access] Requesting Grant...');
+                try {
+                    await invoke('grant_alpha_access');
+                    console.log('[Access] Granted. Reloading...');
+                    window.location.reload();
+                } catch (e) {
+                    console.error('[Access] Grant failed:', e);
+                    alert('Failed to grant access: ' + e);
+                }
+            };
+        }
     });
 
     // Handle Boot Flow

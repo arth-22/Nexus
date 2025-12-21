@@ -50,4 +50,29 @@ impl AlphaAccess {
             Err(_) => None, // Silent failure
         }
     }
+
+    pub fn grant(app_handle: &AppHandle) -> Result<(), Box<dyn std::error::Error>> {
+        let config_dir = app_handle.path().app_config_dir()?;
+        if !config_dir.exists() {
+            fs::create_dir_all(&config_dir)?;
+        }
+        let alpha_path = config_dir.join("alpha.json");
+
+        let access = AlphaAccess {
+            enabled: true,
+            cohort_id: Some("local-dev".to_string()),
+            issued_at: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)?
+                .as_secs(),
+            telemetry: Some(AlphaTelemetryConfig { session_summary: false }),
+            constraints: Some(AlphaConstraints {
+                no_screen_recording: false,
+                no_public_demos: true,
+            }),
+        };
+
+        let content = serde_json::to_string_pretty(&access)?;
+        fs::write(alpha_path, content)?;
+        Ok(())
+    }
 }

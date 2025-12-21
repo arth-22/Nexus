@@ -62,19 +62,29 @@ impl AsyncPlanner {
                 }
             });
             
+
+            
+            println!("[AsyncPlanner] Sending Request to LLM...");
             match client.post(LLM_URL).json(&body).send().await {
                 Ok(resp) => {
                     if let Ok(text) = resp.text().await {
                         // Debug Log Raw Response for Config Verification
-                        tracing::debug!("Raw LLM Response (Epoch {:?}): {}", epoch, text);
+                        println!("[AsyncPlanner] Raw LLM Response (Epoch {:?}): {}", epoch, text);
 
-                        let intent: Option<Intent> = serde_json::from_str(&text).ok();
+                        // Parse the wrapper JSON from llama-server
+                        let json_resp: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
+                        let content = json_resp["content"].as_str().unwrap_or(text.as_str()); // Fallback to raw if logic changes
+
+                        println!("[AsyncPlanner] Extracted Content: {}", content);
+
+                        let intent: Option<Intent> = serde_json::from_str(content).ok();
                          let parsed = intent.unwrap_or(Intent::DoNothing);
+                         println!("[AsyncPlanner] Parsed Intent: {:?}", parsed);
                          let _ = tx.send(Event::PlanProposed(epoch, parsed)).await;
                     }
                 }
                 Err(e) => {
-                    warn!("LLM Plan Failed/Timeout: {}", e);
+                    println!("[AsyncPlanner] LLM Plan Failed/Timeout: {}", e);
                     let _ = tx.send(Event::PlanProposed(epoch, Intent::DoNothing)).await;
                 }
             }

@@ -13,6 +13,8 @@ pub enum Event {
     /// External signals (Audio, Text, System Signals)
     Input(InputEvent),
     PlanProposed(crate::planner::types::PlanningEpoch, crate::planner::types::Intent),
+    // Phase N: Telemetry Injection
+    Telemetry(crate::kernel::telemetry::event::TelemetryEvent),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
